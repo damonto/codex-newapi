@@ -7,11 +7,14 @@ An OpenAI-compatible aggregation gateway for Cloudflare Workers. It routes reque
 ## Features
 
 - Supports `/models`, `/v1/models`, `/responses`, `/v1/responses`, `/chat/completions`, and `/v1/chat/completions`.
+- Rejects inference request bodies larger than 64 MiB with HTTP 413. The limit is enforced against both `Content-Length` and the bytes actually read from the stream.
 - Selects the highest-priority configured service that supports the requested model and is not cooling down. Configuration order breaks priority ties.
+- Requires every service to declare `disabled`; a service with `disabled: true` is excluded from inference routing and model aggregation.
+- Rejects configuration fields that are not declared by `config.schema.json`.
 - Keeps `codex-auto-review` as a separate fixed service/model mapping.
 - Treats `model_aliases` as optional. When omitted, ordinary models are routed using their requested names.
 - Requires `services[].models` and `codex_auto_review.model` to contain real upstream model names. Client aliases are configured separately.
-- Counts upstream network errors and non-2xx responses as failures. A service enters a 30-minute cooldown only after 10 consecutive failed requests whose entire streak starts and finishes within one five-minute window. Any successful request resets the streak.
+- Counts upstream network errors and HTTP 400 or 503 responses as failures. Other HTTP statuses do not change the failure streak. A service enters a 30-minute cooldown only after 10 consecutive failed requests whose entire streak starts and finishes within one five-minute window. Any successful request resets the streak.
 - Tracks model-catalog health independently from inference health, so a directory outage cannot cool down inference routing.
 - Does not retry or switch services after an upstream request has started. The upstream response is returned unchanged.
 - Preserves ordinary application headers while replacing `Authorization` and removing hop-by-hop, proxy-tracing, cookie, and client-credential headers before forwarding.
@@ -41,6 +44,7 @@ Copy `config.example.json` to `config.json` and edit it. The real configuration 
       "id": "primary",
       "base_url": "https://newapi.example.com/v1",
       "api_key": "sk-upstream",
+      "disabled": false,
       "priority": 100,
       "models": ["grok-4.5"]
     }
@@ -60,6 +64,10 @@ Copy `config.example.json` to `config.json` and edit it. The real configuration 
   }
 }
 ```
+
+Every service must explicitly set `disabled` to a boolean. Use `false` to make the service available and `true` to stop routing requests to it and exclude it from `/models` without deleting its configuration.
+
+Configuration objects are strict: unknown root, service, client-key, and `codex_auto_review` fields are rejected instead of being silently ignored.
 
 `model_aliases` may be omitted. If present, each value must be a real model listed by at least one service. For example, a client request for `gpt-5.6-sol` is forwarded upstream with `model: grok-4.5`. The alias is an entry-point name and is never sent to the upstream service.
 
@@ -96,7 +104,7 @@ Then configure the Git deployment in the Cloudflare dashboard:
 2. Authorize the **Cloudflare Workers and Pages** GitHub application and select this repository.
 3. Use `main` as the production branch and `/` as the root directory.
 4. Ensure the Cloudflare Worker name is `codex-newapi`, matching `wrangler.jsonc`.
-5. Set the build command to `npm test && npm run typecheck && npm run config:validate -- config.example.json`.
+5. Set the build command to `npm test && npm run typecheck && npm run config:validate -- config.example.json && npx wrangler types --check`.
 6. Set the deploy command to `npm run deploy` and select **Save and Deploy**.
 
 Cloudflare uses the `.node-version` file to select Node.js 24. After the connection is active, every push to `main` runs the checks and deploys the new Worker version automatically. Cloudflare can also create preview versions for non-production branches when branch builds are enabled.
@@ -137,7 +145,7 @@ npm run dev
 
 The Worker caches the KV configuration for 10 seconds by default. Updating the KV value does not require a Worker redeploy, although KV propagation can take a short time.
 
-The `/models` and `/v1/models` aggregations use an isolate-local successful-response cache for 30 seconds by default. Set `MODELS_CACHE_TTL_SECONDS` to `0` to disable it (values above five minutes are capped). Concurrent misses are coalesced into one upstream fan-out. Each upstream catalog request has an independent three-second timeout. Catalog health is tracked separately from inference health, so a temporary directory failure does not cool down an inference route.
+The `/models` and `/v1/models` aggregations use an isolate-local successful-response cache for 30 seconds by default. Set `MODELS_CACHE_TTL_SECONDS` to `0` to disable it (values above five minutes are capped). Concurrent misses are coalesced into one upstream fan-out. At most six upstream catalog requests run concurrently; each has an independent three-second timeout and an 8 MiB response-body limit. Unused error bodies are cancelled. Catalog health is tracked separately from inference health, so a temporary directory failure does not cool down an inference route.
 
 ## Codex provider configuration
 
@@ -166,5 +174,6 @@ npm run models:sync
 npm test
 npm run typecheck
 npm run config:validate -- config.example.json
+npx wrangler types --check
 npx wrangler deploy --dry-run
 ```

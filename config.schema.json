@@ -23,6 +23,7 @@
           "id",
           "base_url",
           "api_key",
+          "disabled",
           "priority",
           "models"
         ],
@@ -40,6 +41,9 @@
           "api_key": {
             "type": "string",
             "minLength": 1
+          },
+          "disabled": {
+            "type": "boolean"
           },
           "priority": {
             "type": "integer"

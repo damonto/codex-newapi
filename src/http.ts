@@ -76,12 +76,58 @@ export function bearerToken(request: Request): string | undefined {
 export function findClientApiKey(
   request: Request,
   entries: ClientApiKeyConfig[],
-): ClientApiKeyConfig | undefined {
-  const token = bearerToken(request);
+): Promise<ClientApiKeyConfig | undefined> {
+  return findClientApiKeyByToken(bearerToken(request), entries);
+}
+
+async function digestSecret(value: string): Promise<ArrayBuffer> {
+  return crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+}
+
+interface TimingSafeSubtleCrypto extends SubtleCrypto {
+  timingSafeEqual(
+    left: ArrayBuffer | ArrayBufferView,
+    right: ArrayBuffer | ArrayBufferView,
+  ): boolean;
+}
+
+function hasTimingSafeEqual(value: SubtleCrypto): value is TimingSafeSubtleCrypto {
+  return typeof Reflect.get(value, "timingSafeEqual") === "function";
+}
+
+function equalDigests(left: ArrayBuffer, right: ArrayBuffer): boolean {
+  if (hasTimingSafeEqual(crypto.subtle)) {
+    return crypto.subtle.timingSafeEqual(left, right);
+  }
+
+  // Node.js does not expose the Workers timingSafeEqual extension. Keep the
+  // test/tooling fallback fixed-length and non-short-circuiting as well.
+  const leftBytes = new Uint8Array(left);
+  const rightBytes = new Uint8Array(right);
+  let difference = leftBytes.byteLength ^ rightBytes.byteLength;
+  const length = Math.max(leftBytes.byteLength, rightBytes.byteLength);
+  for (let index = 0; index < length; index += 1) {
+    difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
+  }
+  return difference === 0;
+}
+
+async function findClientApiKeyByToken(
+  token: string | undefined,
+  entries: ClientApiKeyConfig[],
+): Promise<ClientApiKeyConfig | undefined> {
   if (!token) {
     return undefined;
   }
-  return entries.find((entry) => entry.api_key === token);
+  const providedDigest = await digestSecret(token);
+  let matched: ClientApiKeyConfig | undefined;
+  for (const entry of entries) {
+    const expectedDigest = await digestSecret(entry.api_key);
+    if (equalDigests(providedDigest, expectedDigest) && matched === undefined) {
+      matched = entry;
+    }
+  }
+  return matched;
 }
 
 export function upstreamUrl(service: ServiceConfig, path: string, search = ""): string {

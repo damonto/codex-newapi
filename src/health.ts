@@ -1,10 +1,13 @@
-import { jsonResponse } from "./http.ts";
-import { configureLogging, errorMessage, logWarn } from "./log.ts";
-import type { Env, ServiceHealthSnapshot } from "./types.ts";
+import { errorMessage, logWarn } from "./log.ts";
+import type { ServiceHealthSnapshot } from "./types.ts";
 
 export const FAILURE_THRESHOLD = 10;
 export const FAILURE_WINDOW_MS = 5 * 60 * 1000;
 export const COOLDOWN_MS = 30 * 60 * 1000;
+
+export function isHealthFailureStatus(status: number): boolean {
+  return status === 400 || status === 503;
+}
 
 export type HealthScope = "inference" | "catalog";
 
@@ -12,20 +15,12 @@ export interface HealthExecutionContext {
   waitUntil?: (promise: Promise<unknown>) => void;
 }
 
-export class ServiceHealth implements DurableObject {
+export class ServiceHealthState {
   private failures = 0;
   private failureWindowStartedAt: number | null = null;
   private coolingUntil: number | null = null;
 
-  constructor(
-    _state: DurableObjectState,
-    env: Env,
-    private readonly clock: () => number = () => Date.now(),
-  ) {
-    if (env?.LOG_LEVEL !== undefined) {
-      configureLogging(env.LOG_LEVEL);
-    }
-  }
+  constructor(private readonly clock: () => number = () => Date.now()) {}
 
   private resetFailures(): void {
     this.failures = 0;
@@ -50,36 +45,34 @@ export class ServiceHealth implements DurableObject {
     };
   }
 
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
+  getStatus(): ServiceHealthSnapshot {
+    const now = this.clock();
+    return this.snapshot(now);
+  }
+
+  recordSuccess(): ServiceHealthSnapshot {
+    this.resetFailures();
+    this.coolingUntil = null;
+    return this.snapshot();
+  }
+
+  recordFailure(): ServiceHealthSnapshot {
     const now = this.clock();
     this.snapshot(now);
-
-    if (request.method === "GET" && url.pathname === "/status") {
-      return jsonResponse(this.snapshot(now));
-    }
-    if (request.method === "POST" && url.pathname === "/success") {
-      this.resetFailures();
-      this.coolingUntil = null;
-      return jsonResponse(this.snapshot(now));
-    }
-    if (request.method === "POST" && url.pathname === "/failure") {
-      if (this.coolingUntil === null) {
-        if (
-          this.failureWindowStartedAt === null ||
-          now - this.failureWindowStartedAt >= FAILURE_WINDOW_MS
-        ) {
-          this.resetFailures();
-          this.failureWindowStartedAt = now;
-        }
-        this.failures += 1;
-        if (this.failures >= FAILURE_THRESHOLD) {
-          this.coolingUntil = now + COOLDOWN_MS;
-        }
+    if (this.coolingUntil === null) {
+      if (
+        this.failureWindowStartedAt === null ||
+        now - this.failureWindowStartedAt >= FAILURE_WINDOW_MS
+      ) {
+        this.resetFailures();
+        this.failureWindowStartedAt = now;
       }
-      return jsonResponse(this.snapshot(now));
+      this.failures += 1;
+      if (this.failures >= FAILURE_THRESHOLD) {
+        this.coolingUntil = now + COOLDOWN_MS;
+      }
     }
-    return new Response("Not Found", { status: 404 });
+    return this.snapshot(now);
   }
 }
 
@@ -87,15 +80,8 @@ function healthObjectName(serviceId: string, scope: HealthScope): string {
   return scope === "inference" ? serviceId : `${serviceId}:catalog`;
 }
 
-function healthStub(env: Env, serviceId: string, scope: HealthScope): DurableObjectStub {
-  return env.HEALTH.get(env.HEALTH.idFromName(healthObjectName(serviceId, scope)));
-}
-
-async function readSnapshot(response: Response): Promise<ServiceHealthSnapshot> {
-  if (!response.ok) {
-    throw new Error(`health Durable Object returned ${response.status}`);
-  }
-  return (await response.json()) as ServiceHealthSnapshot;
+function healthStub(env: Env, serviceId: string, scope: HealthScope) {
+  return env.HEALTH.getByName(healthObjectName(serviceId, scope));
 }
 
 export async function serviceIsAvailable(
@@ -105,8 +91,7 @@ export async function serviceIsAvailable(
   scope: HealthScope = "inference",
 ): Promise<boolean> {
   try {
-    const response = await healthStub(env, serviceId, scope).fetch("https://health/status");
-    const snapshot = await readSnapshot(response);
+    const snapshot = await healthStub(env, serviceId, scope).getStatus();
     const available = snapshot.cooling_until === null || snapshot.cooling_until <= Date.now();
     if (!available) {
       logWarn("health.service.cooling", {
@@ -137,10 +122,10 @@ async function record(
   scope: HealthScope = "inference",
 ): Promise<void> {
   try {
-    const response = await healthStub(env, serviceId, scope).fetch(`https://health/${outcome}`, {
-      method: "POST",
-    });
-    const snapshot = await readSnapshot(response);
+    const stub = healthStub(env, serviceId, scope);
+    const snapshot = outcome === "success"
+      ? await stub.recordSuccess()
+      : await stub.recordFailure();
     if (outcome === "failure" && snapshot.cooling_until !== null) {
       logWarn("health.cooldown.active", {
         request_id: requestId,

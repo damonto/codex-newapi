@@ -1,7 +1,6 @@
 import { serviceIsAvailable } from "./health.ts";
 import type {
   ClientApiKeyConfig,
-  Env,
   GatewayConfig,
   ServiceConfig,
 } from "./types.ts";
@@ -50,6 +49,7 @@ export function resolveModelRoute(
     const service = config.services.find(
       (entry) =>
         entry.id === config.codex_auto_review.service &&
+        !entry.disabled &&
         allowedServices.has(entry.id) &&
         serviceSupportsAutoReview(entry, config.codex_auto_review.model),
     );
@@ -63,6 +63,7 @@ export function resolveModelRoute(
   const upstreamModel = config.model_aliases[requestedModel] ?? requestedModel;
   const services = config.services.filter(
     (service) =>
+      !service.disabled &&
       allowedServices.has(service.id) &&
       serviceSupportsModel(service, requestedModel, upstreamModel, config.model_aliases),
   );
@@ -92,7 +93,7 @@ export function allowedServices(
 ): ServiceConfig[] {
   const allowed = new Set(client.services);
   return sortByPriority(
-    config.services.filter((service) => allowed.has(service.id)),
+    config.services.filter((service) => !service.disabled && allowed.has(service.id)),
     config,
   );
 }

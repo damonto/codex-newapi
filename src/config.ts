@@ -1,7 +1,6 @@
 import type {
   ClientApiKeyConfig,
   CodexAutoReviewConfig,
-  Env,
   GatewayConfig,
   ServiceConfig,
 } from "./types.ts";
@@ -9,6 +8,23 @@ import { errorMessage, logError, logInfo, logWarn } from "./log.ts";
 
 const DEFAULT_CONFIG_KEY = "gateway-config";
 const DEFAULT_CACHE_TTL_SECONDS = 10;
+const ROOT_FIELDS = new Set([
+  "$schema",
+  "services",
+  "api_keys",
+  "model_aliases",
+  "codex_auto_review",
+]);
+const SERVICE_FIELDS = new Set([
+  "id",
+  "base_url",
+  "api_key",
+  "disabled",
+  "priority",
+  "models",
+]);
+const API_KEY_FIELDS = new Set(["api_key", "services"]);
+const AUTO_REVIEW_FIELDS = new Set(["service", "model"]);
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -23,6 +39,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function rejectUnknownFields(
+  value: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  path: string,
+): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw new ConfigError(`${path}.${key} is not supported`);
+    }
+  }
+}
+
 function requiredString(value: unknown, path: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new ConfigError(`${path} must be a non-empty string`);
@@ -33,6 +61,13 @@ function requiredString(value: unknown, path: string): string {
 function requiredInteger(value: unknown, path: string): number {
   if (typeof value !== "number" || !Number.isInteger(value)) {
     throw new ConfigError(`${path} must be an integer`);
+  }
+  return value;
+}
+
+function requiredBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new ConfigError(`${path} must be a boolean`);
   }
   return value;
 }
@@ -69,6 +104,7 @@ function parseService(value: unknown, index: number): ServiceConfig {
   if (!isRecord(value)) {
     throw new ConfigError(`${path} must be an object`);
   }
+  rejectUnknownFields(value, SERVICE_FIELDS, path);
   const id = requiredString(value.id, `${path}.id`);
   if (!/^[A-Za-z0-9._-]+$/.test(id)) {
     throw new ConfigError(`${path}.id contains unsupported characters`);
@@ -77,6 +113,7 @@ function parseService(value: unknown, index: number): ServiceConfig {
     id,
     base_url: validateBaseUrl(requiredString(value.base_url, `${path}.base_url`), `${path}.base_url`),
     api_key: requiredString(value.api_key, `${path}.api_key`),
+    disabled: requiredBoolean(value.disabled, `${path}.disabled`),
     priority: requiredInteger(value.priority, `${path}.priority`),
     models: stringArray(value.models, `${path}.models`),
   };
@@ -87,6 +124,7 @@ function parseApiKey(value: unknown, index: number): ClientApiKeyConfig {
   if (!isRecord(value)) {
     throw new ConfigError(`${path} must be an object`);
   }
+  rejectUnknownFields(value, API_KEY_FIELDS, path);
   return {
     api_key: requiredString(value.api_key, `${path}.api_key`),
     services: stringArray(value.services, `${path}.services`),
@@ -119,6 +157,7 @@ function parseAutoReview(value: unknown): CodexAutoReviewConfig {
   if (!isRecord(value)) {
     throw new ConfigError("codex_auto_review must be an object");
   }
+  rejectUnknownFields(value, AUTO_REVIEW_FIELDS, "codex_auto_review");
   return {
     service: requiredString(value.service, "codex_auto_review.service"),
     model: requiredString(value.model, "codex_auto_review.model"),
@@ -128,6 +167,10 @@ function parseAutoReview(value: unknown): CodexAutoReviewConfig {
 export function parseConfig(value: unknown): GatewayConfig {
   if (!isRecord(value)) {
     throw new ConfigError("configuration must be a JSON object");
+  }
+  rejectUnknownFields(value, ROOT_FIELDS, "configuration");
+  if (value.$schema !== undefined && typeof value.$schema !== "string") {
+    throw new ConfigError("configuration.$schema must be a string");
   }
   if (!Array.isArray(value.services) || value.services.length === 0) {
     throw new ConfigError("services must be a non-empty array");

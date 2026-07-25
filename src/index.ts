@@ -13,9 +13,6 @@ import {
 } from "./log.ts";
 import { handleModels } from "./models.ts";
 import { handleInference } from "./proxy.ts";
-import type { Env } from "./types.ts";
-
-export { ServiceHealth } from "./health.ts";
 
 type InferencePath = "responses" | "chat/completions";
 
@@ -104,7 +101,7 @@ export default {
       ...config.api_keys.map((entry) => entry.api_key),
     ]);
 
-    const client = findClientApiKey(request, config.api_keys);
+    const client = await findClientApiKey(request, config.api_keys);
     if (!client) {
       logWarn("request.authentication.rejected", {
         request_id: requestId,

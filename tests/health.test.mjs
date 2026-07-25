@@ -4,83 +4,82 @@ import test from "node:test";
 import {
   FAILURE_THRESHOLD,
   FAILURE_WINDOW_MS,
+  isHealthFailureStatus,
   recordServiceFailure,
   scheduleHealthUpdate,
   serviceIsAvailable,
-  ServiceHealth,
+  ServiceHealthState,
 } from "../src/health.ts";
 
 test("ten consecutive failures start a cooldown and success resets state", async () => {
-  const health = new ServiceHealth({}, {});
+  const health = new ServiceHealthState();
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
-    await health.fetch(new Request("https://health/failure", { method: "POST" }));
+    health.recordFailure();
   }
 
-  let response = await health.fetch(new Request("https://health/status"));
-  let snapshot = await response.json();
+  let snapshot = health.getStatus();
   assert.equal(snapshot.failures, FAILURE_THRESHOLD);
   assert.equal(typeof snapshot.cooling_until, "number");
 
-  response = await health.fetch(new Request("https://health/success", { method: "POST" }));
-  snapshot = await response.json();
+  snapshot = health.recordSuccess();
   assert.deepEqual(snapshot, { failures: 0, cooling_until: null });
 });
 
 test("failures outside the five-minute window do not join the same streak", async () => {
   let now = 1_000;
-  const health = new ServiceHealth({}, {}, () => now);
+  const health = new ServiceHealthState(() => now);
 
   for (let index = 0; index < FAILURE_THRESHOLD - 1; index += 1) {
-    await health.fetch(new Request("https://health/failure", { method: "POST" }));
+    health.recordFailure();
   }
 
   now += FAILURE_WINDOW_MS;
-  await health.fetch(new Request("https://health/failure", { method: "POST" }));
+  health.recordFailure();
 
-  const response = await health.fetch(new Request("https://health/status"));
-  const snapshot = await response.json();
+  const snapshot = health.getStatus();
   assert.deepEqual(snapshot, { failures: 1, cooling_until: null });
 });
 
 test("an expired failure window is cleared when health is read", async () => {
   let now = 3_000;
-  const health = new ServiceHealth({}, {}, () => now);
-  await health.fetch(new Request("https://health/failure", { method: "POST" }));
+  const health = new ServiceHealthState(() => now);
+  health.recordFailure();
 
   now += FAILURE_WINDOW_MS;
-  const response = await health.fetch(new Request("https://health/status"));
-  const snapshot = await response.json();
+  const snapshot = health.getStatus();
   assert.deepEqual(snapshot, { failures: 0, cooling_until: null });
 });
 
 test("ten failures inside one five-minute window start a cooldown", async () => {
   let now = 2_000;
-  const health = new ServiceHealth({}, {}, () => now);
+  const health = new ServiceHealthState(() => now);
 
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
     now += 20_000;
-    await health.fetch(new Request("https://health/failure", { method: "POST" }));
+    health.recordFailure();
   }
 
-  const response = await health.fetch(new Request("https://health/status"));
-  const snapshot = await response.json();
+  const snapshot = health.getStatus();
   assert.equal(snapshot.failures, FAILURE_THRESHOLD);
   assert.equal(typeof snapshot.cooling_until, "number");
 });
 
+test("only HTTP 400 and 503 are failure statuses", () => {
+  assert.equal(isHealthFailureStatus(400), true);
+  assert.equal(isHealthFailureStatus(503), true);
+  assert.equal(isHealthFailureStatus(401), false);
+  assert.equal(isHealthFailureStatus(429), false);
+  assert.equal(isHealthFailureStatus(500), false);
+});
+
 test("catalog health is isolated from inference health", async () => {
   const objects = new Map([
-    ["service", new ServiceHealth({}, {})],
-    ["service:catalog", new ServiceHealth({}, {})],
+    ["service", new ServiceHealthState()],
+    ["service:catalog", new ServiceHealthState()],
   ]);
   const env = {
     HEALTH: {
-      idFromName: (name) => name,
-      get: (id) => ({
-        fetch: (input, init) => objects.get(id).fetch(
-          input instanceof Request ? input : new Request(input, init),
-        ),
-      }),
+      getByName: (name) => objects.get(name),
     },
   };
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {

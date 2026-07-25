@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig } from "../src/config.ts";
-import { FAILURE_THRESHOLD, ServiceHealth } from "../src/health.ts";
+import { FAILURE_THRESHOLD, ServiceHealthState } from "../src/health.ts";
 import { resolveModelRoute, selectAvailableService } from "../src/routing.ts";
 
 const config = parseConfig({
@@ -11,6 +11,7 @@ const config = parseConfig({
       id: "secondary",
       base_url: "https://secondary.example/v1",
       api_key: "two",
+      disabled: false,
       priority: 10,
       models: ["grok-4.5", "review-model"],
     },
@@ -18,6 +19,7 @@ const config = parseConfig({
       id: "primary",
       base_url: "https://primary.example/v1",
       api_key: "one",
+      disabled: false,
       priority: 100,
       models: ["grok-4.5"],
     },
@@ -40,11 +42,52 @@ test("codex-auto-review is pinned to its configured service", () => {
   assert.deepEqual(route.services.map((service) => service.id), ["secondary"]);
 });
 
+test("disabled services are excluded before priority and health selection", async () => {
+  const disabledConfig = {
+    ...config,
+    services: config.services.map((service) => ({
+      ...service,
+      disabled: service.id === "primary",
+    })),
+  };
+  const route = resolveModelRoute(disabledConfig, client, "gpt-5.6-sol");
+  assert.deepEqual(route.services.map((service) => service.id), ["secondary"]);
+
+  let healthChecks = 0;
+  const selected = await selectAvailableService(
+    {
+      HEALTH: {
+        getByName: () => ({
+          getStatus: async () => {
+            healthChecks += 1;
+            return { failures: 0, cooling_until: null };
+          },
+        }),
+      },
+    },
+    route,
+  );
+  assert.equal(selected.id, "secondary");
+  assert.equal(healthChecks, 1);
+});
+
+test("a disabled codex-auto-review service is unavailable", () => {
+  const disabledConfig = {
+    ...config,
+    services: config.services.map((service) => ({
+      ...service,
+      disabled: service.id === "secondary",
+    })),
+  };
+  const route = resolveModelRoute(disabledConfig, client, "codex-auto-review");
+  assert.deepEqual(route.services, []);
+});
+
 test("a cooling primary service is skipped for the next priority", async () => {
-  const primary = new ServiceHealth({}, {});
-  const secondary = new ServiceHealth({}, {});
+  const primary = new ServiceHealthState();
+  const secondary = new ServiceHealthState();
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
-    await primary.fetch(new Request("https://health/failure", { method: "POST" }));
+    primary.recordFailure();
   }
   const objects = new Map([
     ["primary", primary],
@@ -52,11 +95,7 @@ test("a cooling primary service is skipped for the next priority", async () => {
   ]);
   const env = {
     HEALTH: {
-      idFromName: (name) => name,
-      get: (id) => ({
-        fetch: (input, init) =>
-          objects.get(id).fetch(input instanceof Request ? input : new Request(input, init)),
-      }),
+      getByName: (name) => objects.get(name),
     },
   };
   const route = resolveModelRoute(config, client, "gpt-5.6-sol");
@@ -73,6 +112,7 @@ test("a model alias requires the real upstream model in the service list", () =>
             id: "alias-only",
             base_url: "https://alias.example/v1",
             api_key: "alias-key",
+            disabled: false,
             priority: 1,
             models: ["gpt-5.6-sol", "review-model"],
           },

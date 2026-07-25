@@ -1,6 +1,7 @@
 import {
   recordServiceFailure,
   recordServiceSuccess,
+  isHealthFailureStatus,
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "./health.ts";
@@ -9,6 +10,7 @@ import {
   openAiError,
   upstreamUrl,
 } from "./http.ts";
+import { BodyTooLargeError, readBodyWithinLimit } from "./body.ts";
 import {
   bounded,
   elapsedMs,
@@ -18,12 +20,14 @@ import {
   registerSensitiveValues,
 } from "./log.ts";
 import { resolveModelRoute, selectAvailableService } from "./routing.ts";
-import type { ClientApiKeyConfig, Env, GatewayConfig } from "./types.ts";
+import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
 
 interface InferencePayload {
   [key: string]: unknown;
   model: string;
 }
+
+export const MAX_INFERENCE_BODY_BYTES = 64 * 1024 * 1024;
 
 function parseInferencePayload(text: string): InferencePayload {
   let value: unknown;
@@ -62,7 +66,29 @@ export async function handleInference(
   requestId = "unknown",
   context?: HealthExecutionContext,
 ): Promise<Response> {
-  const rawBody = await request.arrayBuffer();
+  let rawBody: Uint8Array<ArrayBuffer>;
+  try {
+    rawBody = await readBodyWithinLimit(
+      request.body,
+      MAX_INFERENCE_BODY_BYTES,
+      request.headers.get("content-length"),
+    );
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) {
+      logWarn("inference.request.too_large", {
+        request_id: requestId,
+        endpoint: upstreamPath,
+        max_body_bytes: MAX_INFERENCE_BODY_BYTES,
+      });
+      return openAiError(
+        413,
+        "Request body exceeds the 64 MiB limit",
+        "invalid_request_error",
+        "request_too_large",
+      );
+    }
+    throw error;
+  }
   const originalText = new TextDecoder().decode(rawBody);
   logInfo("inference.request.started", {
     request_id: requestId,
@@ -180,7 +206,7 @@ export async function handleInference(
       status: upstreamResponse.status,
       duration_ms: elapsedMs(startedAt),
     });
-    if (upstreamResponse.status === 400) {
+    if (isHealthFailureStatus(upstreamResponse.status)) {
       await scheduleHealthUpdate(
         context,
         recordServiceFailure(env, service.id, requestId),

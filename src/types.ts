@@ -2,6 +2,7 @@ export interface ServiceConfig {
   id: string;
   base_url: string;
   api_key: string;
+  disabled: boolean;
   priority: number;
   models: string[];
 }
@@ -21,15 +22,6 @@ export interface GatewayConfig {
   api_keys: ClientApiKeyConfig[];
   model_aliases: Record<string, string>;
   codex_auto_review: CodexAutoReviewConfig;
-}
-
-export interface Env {
-  CODEX_NEWAPI_CONFIG_KV: KVNamespace;
-  HEALTH: DurableObjectNamespace;
-  CONFIG_KEY?: string;
-  CONFIG_CACHE_TTL_SECONDS?: string;
-  MODELS_CACHE_TTL_SECONDS?: string;
-  LOG_LEVEL?: string;
 }
 
 export interface ServiceHealthSnapshot {

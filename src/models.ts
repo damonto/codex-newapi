@@ -1,4 +1,5 @@
 import codexCatalog from "./codex-models.json" with { type: "json" };
+import { discardBody, readBodyWithinLimit } from "./body.ts";
 import {
   forwardRequestHeaders,
   jsonResponse,
@@ -9,6 +10,7 @@ import {
 import {
   recordServiceFailure,
   recordServiceSuccess,
+  isHealthFailureStatus,
   scheduleHealthUpdate,
   serviceIsAvailable,
   type HealthExecutionContext,
@@ -26,12 +28,13 @@ import {
 } from "./log.ts";
 import type {
   ClientApiKeyConfig,
-  Env,
   GatewayConfig,
   ServiceConfig,
 } from "./types.ts";
 
 export const MODEL_CATALOG_TIMEOUT_MS = 3_000;
+export const MAX_MODEL_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
+export const MODEL_CATALOG_CONCURRENCY = 6;
 export const DEFAULT_MODELS_CACHE_TTL_SECONDS = 30;
 export const MAX_MODELS_CACHE_TTL_SECONDS = 300;
 
@@ -117,11 +120,23 @@ async function fetchCatalogResponse(
       signal: controller.signal,
     });
     if (!response.ok) {
+      await discardBody(response.body);
       return { response };
+    }
+    const rawBody = await readBodyWithinLimit(
+      response.body,
+      MAX_MODEL_CATALOG_BODY_BYTES,
+      response.headers.get("content-length"),
+    );
+    let body: unknown;
+    try {
+      body = JSON.parse(new TextDecoder().decode(rawBody)) as unknown;
+    } catch {
+      throw new Error("model catalog response must be valid JSON");
     }
     return {
       response,
-      body: await response.json(),
+      body,
     };
   })();
   const timeout = new Promise<never>((_, reject) => {
@@ -171,10 +186,12 @@ async function fetchServiceModels(
         status: result.response.status,
         duration_ms: elapsedMs(startedAt),
       });
-      await scheduleHealthUpdate(
-        context,
-        recordServiceFailure(env, service.id, requestId, "catalog"),
-      );
+      if (isHealthFailureStatus(result.response.status)) {
+        await scheduleHealthUpdate(
+          context,
+          recordServiceFailure(env, service.id, requestId, "catalog"),
+        );
+      }
       return { service, success: false, models: [] };
     }
     const models = parseUpstreamModels(result.body);
@@ -422,6 +439,33 @@ function modelCount(payload: JsonObject, codexFormat: boolean): number {
   return Array.isArray(models) ? models.length : 0;
 }
 
+async function mapWithConcurrency<T, Result>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<Result>,
+): Promise<Result[]> {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new RangeError("concurrency must be a positive safe integer");
+  }
+  const results = new Array<Result>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= items.length) {
+          return;
+        }
+        results[index] = await mapper(items[index], index);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 async function collectModels(
   request: Request,
   env: Env,
@@ -431,11 +475,13 @@ async function collectModels(
   requestId: string,
   context?: HealthExecutionContext,
 ): Promise<JsonObject> {
-  const health = await Promise.all(
-    configuredServices.map(async (service) => ({
+  const health = await mapWithConcurrency(
+    configuredServices,
+    MODEL_CATALOG_CONCURRENCY,
+    async (service) => ({
       service,
       available: await serviceIsAvailable(env, service.id, requestId, "catalog"),
-    })),
+    }),
   );
   const available = health.filter((entry) => entry.available).map((entry) => entry.service);
   if (available.length === 0) {
@@ -451,9 +497,10 @@ async function collectModels(
     );
   }
 
-  const results = await Promise.all(
-    available.map((service) =>
-      fetchServiceModels(request, env, config, service, requestId, context)),
+  const results = await mapWithConcurrency(
+    available,
+    MODEL_CATALOG_CONCURRENCY,
+    (service) => fetchServiceModels(request, env, config, service, requestId, context),
   );
   if (!results.some((result) => result.success)) {
     logWarn("models.request.no_upstream_catalog", {

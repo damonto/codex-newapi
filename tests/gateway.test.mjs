@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { clearConfigCacheForTests } from "../src/config.ts";
-import { ServiceHealth } from "../src/health.ts";
+import { ServiceHealthState } from "../src/health.ts";
 import worker from "../src/index.ts";
 import { clearModelsCacheForTests } from "../src/models.ts";
 
@@ -13,6 +13,7 @@ function gatewayConfig() {
         id: "primary",
         base_url: "https://primary.example/v1",
         api_key: "upstream-key",
+        disabled: false,
         priority: 100,
         models: ["grok-4.5", "review-model"],
       },
@@ -30,17 +31,11 @@ function testEnv(config) {
       get: async () => JSON.stringify(config),
     },
     HEALTH: {
-      idFromName: (name) => name,
-      get: (id) => {
-        if (!healthObjects.has(id)) {
-          healthObjects.set(id, new ServiceHealth({}, {}));
+      getByName: (name) => {
+        if (!healthObjects.has(name)) {
+          healthObjects.set(name, new ServiceHealthState());
         }
-        return {
-          fetch: (input, init) => {
-            const request = input instanceof Request ? input : new Request(input, init);
-            return healthObjects.get(id).fetch(request);
-          },
-        };
+        return healthObjects.get(name);
       },
     },
     CONFIG_KEY: "gateway-config",
@@ -231,6 +226,71 @@ test("successful model catalogs are cached for repeated equivalent requests", as
   }
 });
 
+test("disabled services are skipped for inference and model aggregation", async () => {
+  clearConfigCacheForTests();
+  clearModelsCacheForTests();
+  const config = gatewayConfig();
+  config.services[0].disabled = true;
+  config.services.push({
+    id: "secondary",
+    base_url: "https://secondary.example/v1",
+    api_key: "secondary-key",
+    disabled: false,
+    priority: 50,
+    models: ["grok-4.5"],
+  });
+  config.api_keys[0].services.push("secondary");
+
+  const originalFetch = globalThis.fetch;
+  const upstreamUrls = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    upstreamUrls.push(request.url);
+    if (request.url.endsWith("/models")) {
+      return Response.json({
+        data: [{ id: "grok-4.5", object: "model", owned_by: "newapi" }],
+      });
+    }
+    return new Response("ok", { status: 200 });
+  };
+
+  try {
+    const env = testEnv(config);
+    const inference = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      env,
+      {},
+    );
+    assert.equal(inference.status, 200);
+
+    const models = await worker.fetch(
+      new Request("https://gateway.example/v1/models", {
+        headers: { authorization: "Bearer client-key", "user-agent": "OpenAI-SDK" },
+      }),
+      env,
+      {},
+    );
+    assert.equal(models.status, 200);
+    assert.deepEqual(
+      (await models.json()).data.map((model) => model.id),
+      ["grok-4.5", "gpt-5.6-sol"],
+    );
+    assert.deepEqual(upstreamUrls, [
+      "https://secondary.example/v1/responses",
+      "https://secondary.example/v1/models",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("an upstream error is returned without retrying another service", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
@@ -238,6 +298,7 @@ test("an upstream error is returned without retrying another service", async () 
     id: "secondary",
     base_url: "https://secondary.example/v1",
     api_key: "secondary-key",
+    disabled: false,
     priority: 50,
     models: ["grok-4.5"],
   });
