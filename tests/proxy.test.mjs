@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { findClientApiKey, forwardRequestHeaders } from "../src/http.ts";
-import { handleInference, rewriteModel } from "../src/proxy.ts";
+import {
+  handleInference,
+  rewriteModel,
+} from "../src/proxy.ts";
 
-function inferenceFixture() {
+function inferenceFixture(retry) {
   const service = {
     id: "primary",
     base_url: "https://primary.example/v1",
@@ -12,6 +15,7 @@ function inferenceFixture() {
     disabled: false,
     priority: 100,
     models: ["model"],
+    ...(retry === undefined ? {} : { retry }),
   };
   const calls = { failure: 0, success: 0 };
   const snapshot = { failures: 0, cooling_until: null };
@@ -124,11 +128,195 @@ test("inference HTTP health only records 400 and 503 responses", async () => {
         fixture.config,
         fixture.client,
         "responses",
+        "health-test",
+        undefined,
+        { wait: async () => {} },
       );
       assert.equal(response.status, status);
       assert.equal(fixture.calls.failure, expectedFailures);
       assert.equal(fixture.calls.success, 0);
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("inference retries configured HTTP statuses with configured delays and the same request", async () => {
+  const retry = {
+    status_codes: [429],
+    delays_ms: [250, 500, 1_000],
+  };
+  const fixture = inferenceFixture(retry);
+  const originalFetch = globalThis.fetch;
+  const waits = [];
+  const requests = [];
+  let attempts = 0;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    requests.push({
+      url: request.url,
+      method: request.method,
+      authorization: request.headers.get("authorization"),
+      body: await request.text(),
+    });
+    attempts += 1;
+    return attempts < 4
+      ? new Response(`rate limited ${attempts}`, { status: 429 })
+      : new Response("event: response.completed\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+  };
+
+  try {
+    const response = await handleInference(
+      inferenceRequest(),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+      "retry-test",
+      undefined,
+      { wait: async (delayMs) => waits.push(delayMs) },
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "event: response.completed\n\n");
+    assert.deepEqual(waits, retry.delays_ms);
+    assert.equal(requests.length, 4);
+    assert(requests.every((request) => request.url === "https://primary.example/v1/responses"));
+    assert(requests.every((request) => request.method === "POST"));
+    assert(requests.every((request) => request.authorization === "Bearer service-secret-key"));
+    assert(requests.every((request) =>
+      request.body === JSON.stringify({ model: "model", input: "hello" })
+    ));
+    assert.equal(fixture.calls.failure, 0);
+    assert.equal(fixture.calls.success, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("inference does not retry HTTP 429 when the service has no retry policy", async () => {
+  const fixture = inferenceFixture();
+  const originalFetch = globalThis.fetch;
+  const waits = [];
+  let attempts = 0;
+  const upstreamResponse = new Response("rate limited", { status: 429 });
+  globalThis.fetch = async () => {
+    attempts += 1;
+    return upstreamResponse;
+  };
+
+  try {
+    const response = await handleInference(
+      inferenceRequest(),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+      "no-retry-test",
+      undefined,
+      { wait: async (delayMs) => waits.push(delayMs) },
+    );
+
+    assert.equal(response, upstreamResponse);
+    assert.equal(attempts, 1);
+    assert.deepEqual(waits, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("inference can retry a different status for a different service policy", async () => {
+  const retry = {
+    status_codes: [503],
+    delays_ms: [100, 300],
+  };
+  const fixture = inferenceFixture(retry);
+  const originalFetch = globalThis.fetch;
+  const waits = [];
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    return new Response(null, { status: attempts < 3 ? 503 : 200 });
+  };
+
+  try {
+    const response = await handleInference(
+      inferenceRequest(),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+      "custom-retry-test",
+      undefined,
+      { wait: async (delayMs) => waits.push(delayMs) },
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(attempts, 3);
+    assert.deepEqual(waits, retry.delays_ms);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("inference returns the final HTTP 429 unchanged after exhausting retries", async () => {
+  const retry = {
+    status_codes: [429],
+    delays_ms: [250, 500, 1_000],
+  };
+  const fixture = inferenceFixture(retry);
+  const originalFetch = globalThis.fetch;
+  const waits = [];
+  let attempts = 0;
+  let cancelledBodies = 0;
+  const finalResponse = new Response('{"error":"still rate limited"}', {
+    status: 429,
+    headers: {
+      "content-type": "application/json",
+      "retry-after": "9",
+      "x-upstream-marker": "final",
+    },
+  });
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts === 4) {
+      return finalResponse;
+    }
+    return new Response(
+      new ReadableStream({
+        cancel() {
+          cancelledBodies += 1;
+        },
+      }),
+      { status: 429 },
+    );
+  };
+
+  try {
+    const response = await handleInference(
+      inferenceRequest(),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+      "retry-exhausted-test",
+      undefined,
+      { wait: async (delayMs) => waits.push(delayMs) },
+    );
+
+    assert.equal(response, finalResponse);
+    assert.equal(attempts, 4);
+    assert.equal(cancelledBodies, 3);
+    assert.deepEqual(waits, retry.delays_ms);
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("retry-after"), "9");
+    assert.equal(response.headers.get("x-upstream-marker"), "final");
+    assert.equal(await response.text(), '{"error":"still rate limited"}');
+    assert.equal(fixture.calls.failure, 0);
+    assert.equal(fixture.calls.success, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -3,11 +3,15 @@ import type {
   CodexAutoReviewConfig,
   GatewayConfig,
   ServiceConfig,
+  ServiceRetryConfig,
 } from "./types.ts";
 import { errorMessage, logError, logInfo, logWarn } from "./log.ts";
 
 const DEFAULT_CONFIG_KEY = "gateway-config";
 const DEFAULT_CACHE_TTL_SECONDS = 10;
+const MAX_RETRY_STATUS_CODES = 20;
+const MAX_RETRY_DELAYS = 10;
+const MAX_RETRY_DELAY_MS = 60_000;
 const ROOT_FIELDS = new Set([
   "$schema",
   "services",
@@ -22,9 +26,11 @@ const SERVICE_FIELDS = new Set([
   "disabled",
   "priority",
   "models",
+  "retry",
 ]);
 const API_KEY_FIELDS = new Set(["api_key", "services"]);
 const AUTO_REVIEW_FIELDS = new Set(["service", "model"]);
+const RETRY_FIELDS = new Set(["status_codes", "delays_ms"]);
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -83,6 +89,65 @@ function stringArray(value: unknown, path: string): string[] {
   return result;
 }
 
+function integerArray(
+  value: unknown,
+  path: string,
+  options: {
+    maxItems: number;
+    minValue: number;
+    maxValue: number;
+    unique?: boolean;
+  },
+): number[] {
+  if (!Array.isArray(value)) {
+    throw new ConfigError(`${path} must be an array`);
+  }
+  if (value.length > options.maxItems) {
+    throw new ConfigError(`${path} must contain at most ${options.maxItems} items`);
+  }
+  const result = value.map((entry, index) => {
+    const itemPath = `${path}[${index}]`;
+    const parsed = requiredInteger(entry, itemPath);
+    if (parsed < options.minValue || parsed > options.maxValue) {
+      throw new ConfigError(
+        `${itemPath} must be between ${options.minValue} and ${options.maxValue}`,
+      );
+    }
+    return parsed;
+  });
+  if (options.unique && new Set(result).size !== result.length) {
+    throw new ConfigError(`${path} must not contain duplicates`);
+  }
+  return result;
+}
+
+function parseRetry(value: unknown, path: string): ServiceRetryConfig | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new ConfigError(`${path} must be an object`);
+  }
+  rejectUnknownFields(value, RETRY_FIELDS, path);
+  const statusCodes = integerArray(value.status_codes, `${path}.status_codes`, {
+    maxItems: MAX_RETRY_STATUS_CODES,
+    minValue: 400,
+    maxValue: 599,
+    unique: true,
+  });
+  const delaysMs = integerArray(value.delays_ms, `${path}.delays_ms`, {
+    maxItems: MAX_RETRY_DELAYS,
+    minValue: 0,
+    maxValue: MAX_RETRY_DELAY_MS,
+  });
+  if ((statusCodes.length === 0) !== (delaysMs.length === 0)) {
+    throw new ConfigError(
+      `${path}.status_codes and ${path}.delays_ms must both be empty or both be non-empty`,
+    );
+  }
+  return { status_codes: statusCodes, delays_ms: delaysMs };
+}
+
 function validateBaseUrl(value: string, path: string): string {
   let url: URL;
   try {
@@ -109,6 +174,7 @@ function parseService(value: unknown, index: number): ServiceConfig {
   if (!/^[A-Za-z0-9._-]+$/.test(id)) {
     throw new ConfigError(`${path}.id contains unsupported characters`);
   }
+  const retry = parseRetry(value.retry, `${path}.retry`);
   return {
     id,
     base_url: validateBaseUrl(requiredString(value.base_url, `${path}.base_url`), `${path}.base_url`),
@@ -116,6 +182,7 @@ function parseService(value: unknown, index: number): ServiceConfig {
     disabled: requiredBoolean(value.disabled, `${path}.disabled`),
     priority: requiredInteger(value.priority, `${path}.priority`),
     models: stringArray(value.models, `${path}.models`),
+    ...(retry === undefined ? {} : { retry }),
   };
 }
 

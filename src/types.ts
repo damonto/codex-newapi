@@ -1,3 +1,8 @@
+export interface ServiceRetryConfig {
+  status_codes: number[];
+  delays_ms: number[];
+}
+
 export interface ServiceConfig {
   id: string;
   base_url: string;
@@ -5,6 +10,7 @@ export interface ServiceConfig {
   disabled: boolean;
   priority: number;
   models: string[];
+  retry?: ServiceRetryConfig;
 }
 
 export interface ClientApiKeyConfig {

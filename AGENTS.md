@@ -17,6 +17,7 @@ This repository contains a TypeScript Cloudflare Worker that aggregates multiple
 - `services[].models` contains only real upstream model names.
 - `model_aliases` is optional. Its values must be real upstream model names supported by at least one service.
 - `codex_auto_review` is separate from `model_aliases` and pins `codex-auto-review` to one configured service and real model.
+- `services[].retry` is optional and enables retries only when explicitly configured. Its `status_codes` and `delays_ms` arrays must both be empty or both be non-empty; the number of delays is the retry count.
 - Client API keys may only reference declared services.
 - Keep the JSON schema, `config.example.json`, parser validation, and tests consistent when changing configuration.
 
@@ -24,7 +25,8 @@ This repository contains a TypeScript Cloudflare Worker that aggregates multiple
 
 - Preserve request bodies, query strings, headers, and upstream responses whenever possible. Only replace the gateway Authorization header, rewrite a model field when an alias is configured, and remove headers that become invalid after rewriting.
 - Select services by descending priority, then configuration order, while skipping services in cooldown.
-- Do not add per-request retries or fallback after an upstream request has started unless the user explicitly requests that behavior.
+- Apply only the selected service's configured retry policy. Retries resend the same request to that service; they never switch services, and the final upstream response is returned unchanged.
+- Do not add retries beyond the configured policy or fallback to another service after an upstream request has started unless the user explicitly requests that behavior.
 - Health tracking counts a failure streak only when 10 consecutive failed requests occur within a five-minute window. A success resets the streak; the cooldown lasts 30 minutes and persists in Durable Object storage across instance eviction and deployments.
 - `GET /health` and `/v1/health` list current inference cooldowns visible to the authenticated client API key. `DELETE /health/{service_id}` and `/v1/health/{service_id}` manually clear one inference cooldown. `scope=catalog` selects catalog health for either operation.
 - Keep catalog/model-list health separate from inference health. Catalog failures must not change inference routing health.

@@ -10,7 +10,11 @@ import {
   openAiError,
   upstreamUrl,
 } from "./http.ts";
-import { BodyTooLargeError, readBodyWithinLimit } from "./body.ts";
+import {
+  BodyTooLargeError,
+  discardBody,
+  readBodyWithinLimit,
+} from "./body.ts";
 import {
   bounded,
   elapsedMs,
@@ -20,7 +24,11 @@ import {
   registerSensitiveValues,
 } from "./log.ts";
 import { resolveModelRoute, selectAvailableService } from "./routing.ts";
-import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
+import type {
+  ClientApiKeyConfig,
+  GatewayConfig,
+  ServiceRetryConfig,
+} from "./types.ts";
 
 interface InferencePayload {
   [key: string]: unknown;
@@ -28,6 +36,47 @@ interface InferencePayload {
 }
 
 export const MAX_INFERENCE_BODY_BYTES = 64 * 1024 * 1024;
+
+interface InferenceRetryOptions {
+  wait?: (delayMs: number) => Promise<void>;
+}
+
+function wait(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function fetchWithConfiguredRetries(
+  makeRequest: () => Request,
+  requestId: string,
+  upstreamPath: "responses" | "chat/completions",
+  serviceId: string,
+  retry: ServiceRetryConfig | undefined,
+  retryOptions: InferenceRetryOptions,
+): Promise<Response> {
+  let response = await fetch(makeRequest());
+  if (retry === undefined) {
+    return response;
+  }
+  for (const [retryIndex, delayMs] of retry.delays_ms.entries()) {
+    if (!retry.status_codes.includes(response.status)) {
+      break;
+    }
+
+    await discardBody(response.body);
+    logWarn("inference.upstream.retry_scheduled", {
+      request_id: requestId,
+      endpoint: upstreamPath,
+      service_id: serviceId,
+      status: response.status,
+      retry: retryIndex + 1,
+      max_retries: retry.delays_ms.length,
+      retry_delay_ms: delayMs,
+    });
+    await (retryOptions.wait ?? wait)(delayMs);
+    response = await fetch(makeRequest());
+  }
+  return response;
+}
 
 function parseInferencePayload(text: string): InferencePayload {
   let value: unknown;
@@ -65,6 +114,7 @@ export async function handleInference(
   upstreamPath: "responses" | "chat/completions",
   requestId = "unknown",
   context?: HealthExecutionContext,
+  retryOptions: InferenceRetryOptions = {},
 ): Promise<Response> {
   let rawBody: Uint8Array<ArrayBuffer>;
   try {
@@ -163,13 +213,18 @@ export async function handleInference(
 
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(
-      new Request(upstreamUrl(service, upstreamPath, incomingUrl.search), {
+    upstreamResponse = await fetchWithConfiguredRetries(
+      () => new Request(upstreamUrl(service, upstreamPath, incomingUrl.search), {
         method: request.method,
         headers,
         body,
         redirect: "manual",
       }),
+      requestId,
+      upstreamPath,
+      service.id,
+      service.retry,
+      retryOptions,
     );
   } catch (error) {
     logWarn("inference.upstream.exception", {

@@ -25,7 +25,61 @@ test("parseConfig normalizes and validates a complete configuration", () => {
   const config = parseConfig(validConfig());
   assert.equal(config.services[0].base_url, "https://primary.example/v1");
   assert.equal(config.services[0].disabled, false);
+  assert.equal(config.services[0].retry, undefined);
+  assert.equal(Object.hasOwn(config.services[0], "retry"), false);
   assert.equal(config.model_aliases["gpt-5.6-sol"], "grok-4.5");
+});
+
+test("parseConfig enables retries only when a service configures them", () => {
+  const input = validConfig();
+  input.services[0].retry = {
+    status_codes: [429, 503],
+    delays_ms: [250, 500, 1000],
+  };
+
+  const config = parseConfig(input);
+  assert.deepEqual(config.services[0].retry, input.services[0].retry);
+});
+
+test("parseConfig accepts empty retry arrays to disable an explicit policy", () => {
+  const input = validConfig();
+  input.services[0].retry = { status_codes: [], delays_ms: [] };
+  const config = parseConfig(input);
+  assert.deepEqual(config.services[0].retry, input.services[0].retry);
+});
+
+test("parseConfig rejects invalid retry policies", () => {
+  const cases = [
+    [
+      "services[0].retry.status_codes[0] must be between 400 and 599",
+      { status_codes: [399], delays_ms: [100] },
+    ],
+    [
+      "services[0].retry.status_codes must not contain duplicates",
+      { status_codes: [429, 429], delays_ms: [100] },
+    ],
+    [
+      "services[0].retry.delays_ms[0] must be between 0 and 60000",
+      { status_codes: [429], delays_ms: [-1] },
+    ],
+    [
+      "services[0].retry.delays_ms must contain at most 10 items",
+      { status_codes: [429], delays_ms: Array.from({ length: 11 }, () => 0) },
+    ],
+    [
+      "services[0].retry.status_codes and services[0].retry.delays_ms must both be empty or both be non-empty",
+      { status_codes: [429], delays_ms: [] },
+    ],
+  ];
+
+  for (const [message, retry] of cases) {
+    const input = validConfig();
+    input.services[0].retry = retry;
+    assert.throws(
+      () => parseConfig(input),
+      (error) => error instanceof ConfigError && error.message === message,
+    );
+  }
 });
 
 test("parseConfig requires services to explicitly declare disabled", () => {
@@ -84,6 +138,13 @@ test("parseConfig rejects fields that are not declared by the schema", () => {
     }],
     ["services[0].extra is not supported", (input) => {
       input.services[0].extra = true;
+    }],
+    ["services[0].retry.extra is not supported", (input) => {
+      input.services[0].retry = {
+        status_codes: [429],
+        delays_ms: [250],
+        extra: true,
+      };
     }],
     ["api_keys[0].extra is not supported", (input) => {
       input.api_keys[0].extra = true;
