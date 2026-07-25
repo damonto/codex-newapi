@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { clearConfigCacheForTests } from "../src/config.ts";
-import { ServiceHealthState } from "../src/health.ts";
+import { FAILURE_THRESHOLD, serviceIsAvailable, ServiceHealthState } from "../src/health.ts";
 import worker from "../src/index.ts";
 import { clearModelsCacheForTests } from "../src/models.ts";
 
@@ -334,4 +334,113 @@ test("an upstream error is returned without retrying another service", async () 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("an authenticated client can list and clear health only for allowed services", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.services.push({
+    id: "secondary",
+    base_url: "https://secondary.example/v1",
+    api_key: "secondary-key",
+    disabled: false,
+    priority: 50,
+    models: ["grok-4.5"],
+  });
+  const env = testEnv(config);
+  for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
+    env.HEALTH.getByName("primary").recordFailure();
+    env.HEALTH.getByName("primary:catalog").recordFailure();
+    env.HEALTH.getByName("secondary").recordFailure();
+  }
+  assert.equal(await serviceIsAvailable(env, "primary"), false);
+
+  const cooling = env.HEALTH.getByName("primary").getStatus();
+  const list = await worker.fetch(
+    new Request("https://gateway.example/v1/health", {
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.equal(list.status, 200);
+  assert.deepEqual(await list.json(), {
+    object: "list",
+    scope: "inference",
+    data: [{ service_id: "primary", ...cooling }],
+  });
+
+  const catalogCooling = env.HEALTH.getByName("primary:catalog").getStatus();
+  const catalogList = await worker.fetch(
+    new Request("https://gateway.example/v1/health?scope=catalog", {
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.deepEqual(await catalogList.json(), {
+    object: "list",
+    scope: "catalog",
+    data: [{ service_id: "primary", ...catalogCooling }],
+  });
+
+  const response = await worker.fetch(
+    new Request("https://gateway.example/v1/health/primary", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    service_id: "primary",
+    scope: "inference",
+    failures: 0,
+    cooling_until: null,
+  });
+  assert.equal(await serviceIsAvailable(env, "primary"), true);
+
+  const empty = await worker.fetch(
+    new Request("https://gateway.example/health", {
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.deepEqual((await empty.json()).data, []);
+
+  const forbidden = await worker.fetch(
+    new Request("https://gateway.example/v1/health/secondary", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.equal(forbidden.status, 404);
+});
+
+test("health endpoints reject an invalid scope", async () => {
+  clearConfigCacheForTests();
+  const response = await worker.fetch(
+    new Request("https://gateway.example/health/primary?scope=all", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    testEnv(gatewayConfig()),
+    {},
+  );
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, "invalid_health_scope");
+
+  const list = await worker.fetch(
+    new Request("https://gateway.example/v1/health?scope=all", {
+      headers: { authorization: "Bearer client-key" },
+    }),
+    testEnv(gatewayConfig()),
+    {},
+  );
+  assert.equal(list.status, 400);
+  assert.equal((await list.json()).error.code, "invalid_health_scope");
 });

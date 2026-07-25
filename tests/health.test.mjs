@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { SERVICE_FAN_OUT_CONCURRENCY } from "../src/concurrency.ts";
 import {
   FAILURE_THRESHOLD,
   FAILURE_WINDOW_MS,
+  clearServiceHealth,
   isHealthFailureStatus,
+  listCoolingServices,
   recordServiceFailure,
   scheduleHealthUpdate,
   serviceIsAvailable,
@@ -87,6 +90,56 @@ test("catalog health is isolated from inference health", async () => {
   }
   assert.equal(await serviceIsAvailable(env, "service", "test", "inference"), true);
   assert.equal(await serviceIsAvailable(env, "service", "test", "catalog"), false);
+
+  await clearServiceHealth(env, "service", "test", "catalog");
+  assert.equal(await serviceIsAvailable(env, "service", "test", "catalog"), true);
+  assert.equal(await serviceIsAvailable(env, "service", "test", "inference"), true);
+});
+
+test("stored state recreates an active cooldown after an eviction", () => {
+  let now = 5_000;
+  const original = new ServiceHealthState(() => now);
+  for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
+    original.recordFailure();
+  }
+
+  const stored = original.getStoredState();
+  assert(stored);
+  const recreated = new ServiceHealthState(() => now, stored);
+  assert.deepEqual(recreated.getStatus(), original.getStatus());
+
+  now += FAILURE_WINDOW_MS;
+  assert.equal(recreated.getStatus().cooling_until, stored.cooling_until);
+});
+
+test("cooldown status fan-out uses the service concurrency limit", async () => {
+  const serviceIds = Array.from(
+    { length: SERVICE_FAN_OUT_CONCURRENCY * 2 },
+    (_, index) => `service-${index}`,
+  );
+  let active = 0;
+  let maximumActive = 0;
+  const env = {
+    HEALTH: {
+      getByName: () => ({
+        getStatus: async () => {
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          active -= 1;
+          return {
+            failures: FAILURE_THRESHOLD,
+            cooling_until: Date.now() + 60_000,
+          };
+        },
+      }),
+    },
+  };
+
+  const cooling = await listCoolingServices(env, serviceIds);
+
+  assert.equal(cooling.length, serviceIds.length);
+  assert.equal(maximumActive, SERVICE_FAN_OUT_CONCURRENCY);
 });
 
 test("health updates use waitUntil when it is available", async () => {

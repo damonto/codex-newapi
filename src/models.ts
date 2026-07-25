@@ -1,6 +1,10 @@
 import codexCatalog from "./codex-models.json" with { type: "json" };
 import { discardBody, readBodyWithinLimit } from "./body.ts";
 import {
+  mapWithConcurrency,
+  SERVICE_FAN_OUT_CONCURRENCY,
+} from "./concurrency.ts";
+import {
   forwardRequestHeaders,
   jsonResponse,
   openAiError,
@@ -34,7 +38,7 @@ import type {
 
 export const MODEL_CATALOG_TIMEOUT_MS = 3_000;
 export const MAX_MODEL_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
-export const MODEL_CATALOG_CONCURRENCY = 6;
+export const MODEL_CATALOG_CONCURRENCY = SERVICE_FAN_OUT_CONCURRENCY;
 export const DEFAULT_MODELS_CACHE_TTL_SECONDS = 30;
 export const MAX_MODELS_CACHE_TTL_SECONDS = 300;
 
@@ -437,33 +441,6 @@ export function clearModelsCacheForTests(): void {
 function modelCount(payload: JsonObject, codexFormat: boolean): number {
   const models = payload[codexFormat ? "models" : "data"];
   return Array.isArray(models) ? models.length : 0;
-}
-
-async function mapWithConcurrency<T, Result>(
-  items: readonly T[],
-  concurrency: number,
-  mapper: (item: T, index: number) => Promise<Result>,
-): Promise<Result[]> {
-  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
-    throw new RangeError("concurrency must be a positive safe integer");
-  }
-  const results = new Array<Result>(items.length);
-  let nextIndex = 0;
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    async () => {
-      while (true) {
-        const index = nextIndex;
-        nextIndex += 1;
-        if (index >= items.length) {
-          return;
-        }
-        results[index] = await mapper(items[index], index);
-      }
-    },
-  );
-  await Promise.all(workers);
-  return results;
 }
 
 async function collectModels(

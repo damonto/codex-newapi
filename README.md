@@ -6,7 +6,7 @@ An OpenAI-compatible aggregation gateway for Cloudflare Workers. It routes reque
 
 ## Features
 
-- Supports `/models`, `/v1/models`, `/responses`, `/v1/responses`, `/chat/completions`, and `/v1/chat/completions`.
+- Supports `/models`, `/v1/models`, `/responses`, `/v1/responses`, `/chat/completions`, `/v1/chat/completions`, and authenticated health status/reset endpoints.
 - Rejects inference request bodies larger than 64 MiB with HTTP 413. The limit is enforced against both `Content-Length` and the bytes actually read from the stream.
 - Selects the highest-priority configured service that supports the requested model and is not cooling down. Configuration order breaks priority ties.
 - Requires every service to declare `disabled`; a service with `disabled: true` is excluded from inference routing and model aggregation.
@@ -20,7 +20,7 @@ An OpenAI-compatible aggregation gateway for Cloudflare Workers. It routes reque
 - Preserves ordinary application headers while replacing `Authorization` and removing hop-by-hop, proxy-tracing, cookie, and client-credential headers before forwarding.
 - Returns `{ "models": [...] }` to User-Agents containing `codex` and the standard `{ "object": "list", "data": [...] }` shape to other clients.
 - Uses the bundled Codex model catalog for the Codex response format. Only exact catalog matches are returned.
-- Keeps health state in Durable Object memory. It is intentionally not persisted and may reset when the object restarts.
+- Persists health state in Durable Object storage, so a 30-minute cooldown survives instance eviction and Worker deployments.
 
 ## Runtime logging
 
@@ -72,6 +72,28 @@ Configuration objects are strict: unknown root, service, client-key, and `codex_
 `model_aliases` may be omitted. If present, each value must be a real model listed by at least one service. For example, a client request for `gpt-5.6-sol` is forwarded upstream with `model: grok-4.5`. The alias is an entry-point name and is never sent to the upstream service.
 
 `codex_auto_review` remains independent from `model_aliases` and pins `codex-auto-review` to one service and one real upstream model. It must be configured even when no ordinary aliases are used.
+
+## Inspect or clear cooldowns
+
+List services currently cooling down and accessible to the configured client API key:
+
+```bash
+curl \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  "https://codex-newapi-gateway.example.workers.dev/v1/health"
+```
+
+The response uses `{ "object": "list", "scope": "inference", "data": [...] }`; every item contains `service_id`, `failures`, and `cooling_until`. Add `?scope=catalog` to inspect model-catalog health instead.
+
+Use a configured client API key to clear the inference health state for one of the services that key can access:
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  "https://codex-newapi-gateway.example.workers.dev/v1/health/newapi-primary"
+```
+
+Add `?scope=catalog` to clear the service's model-catalog health instead. Listing and clearing never expose or modify services that the authenticated client key cannot access.
 
 ## Deploy
 

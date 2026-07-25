@@ -25,7 +25,8 @@ This repository contains a TypeScript Cloudflare Worker that aggregates multiple
 - Preserve request bodies, query strings, headers, and upstream responses whenever possible. Only replace the gateway Authorization header, rewrite a model field when an alias is configured, and remove headers that become invalid after rewriting.
 - Select services by descending priority, then configuration order, while skipping services in cooldown.
 - Do not add per-request retries or fallback after an upstream request has started unless the user explicitly requests that behavior.
-- Health tracking counts a failure streak only when 10 consecutive failed requests occur within a five-minute window. A success resets the streak; the cooldown lasts 30 minutes and is memory-only.
+- Health tracking counts a failure streak only when 10 consecutive failed requests occur within a five-minute window. A success resets the streak; the cooldown lasts 30 minutes and persists in Durable Object storage across instance eviction and deployments.
+- `GET /health` and `/v1/health` list current inference cooldowns visible to the authenticated client API key. `DELETE /health/{service_id}` and `/v1/health/{service_id}` manually clear one inference cooldown. `scope=catalog` selects catalog health for either operation.
 - Keep catalog/model-list health separate from inference health. Catalog failures must not change inference routing health.
 - Schedule health writes with `ExecutionContext.waitUntil` in Workers; direct test callers may use synchronous fallback behavior.
 - User-Agents containing `codex` receive the Codex `{models: [...]}` shape; other clients receive the standard model-list shape.

@@ -1,4 +1,8 @@
-import { errorMessage, logWarn } from "./log.ts";
+import {
+  mapWithConcurrency,
+  SERVICE_FAN_OUT_CONCURRENCY,
+} from "./concurrency.ts";
+import { errorMessage, logInfo, logWarn } from "./log.ts";
 import type { ServiceHealthSnapshot } from "./types.ts";
 
 export const FAILURE_THRESHOLD = 10;
@@ -15,12 +19,31 @@ export interface HealthExecutionContext {
   waitUntil?: (promise: Promise<unknown>) => void;
 }
 
+export interface StoredServiceHealthState {
+  failures: number;
+  failure_window_started_at: number | null;
+  cooling_until: number | null;
+}
+
+export interface CoolingServiceHealth extends ServiceHealthSnapshot {
+  service_id: string;
+}
+
 export class ServiceHealthState {
   private failures = 0;
   private failureWindowStartedAt: number | null = null;
   private coolingUntil: number | null = null;
 
-  constructor(private readonly clock: () => number = () => Date.now()) {}
+  constructor(
+    private readonly clock: () => number = () => Date.now(),
+    stored?: StoredServiceHealthState,
+  ) {
+    if (stored) {
+      this.failures = stored.failures;
+      this.failureWindowStartedAt = stored.failure_window_started_at;
+      this.coolingUntil = stored.cooling_until;
+    }
+  }
 
   private resetFailures(): void {
     this.failures = 0;
@@ -50,10 +73,25 @@ export class ServiceHealthState {
     return this.snapshot(now);
   }
 
-  recordSuccess(): ServiceHealthSnapshot {
+  getStoredState(): StoredServiceHealthState | null {
+    if (this.failures === 0 && this.failureWindowStartedAt === null && this.coolingUntil === null) {
+      return null;
+    }
+    return {
+      failures: this.failures,
+      failure_window_started_at: this.failureWindowStartedAt,
+      cooling_until: this.coolingUntil,
+    };
+  }
+
+  clear(): ServiceHealthSnapshot {
     this.resetFailures();
     this.coolingUntil = null;
     return this.snapshot();
+  }
+
+  recordSuccess(): ServiceHealthSnapshot {
+    return this.clear();
   }
 
   recordFailure(): ServiceHealthSnapshot {
@@ -162,6 +200,40 @@ export function recordServiceFailure(
   scope: HealthScope = "inference",
 ): Promise<void> {
   return record(env, serviceId, "failure", requestId, scope);
+}
+
+export async function clearServiceHealth(
+  env: Env,
+  serviceId: string,
+  requestId?: string,
+  scope: HealthScope = "inference",
+): Promise<ServiceHealthSnapshot> {
+  const snapshot = await healthStub(env, serviceId, scope).clear();
+  logInfo("health.cooldown.cleared", {
+    request_id: requestId,
+    service_id: serviceId,
+    scope,
+  });
+  return snapshot;
+}
+
+export async function listCoolingServices(
+  env: Env,
+  serviceIds: string[],
+  scope: HealthScope = "inference",
+): Promise<CoolingServiceHealth[]> {
+  const statuses = await mapWithConcurrency(
+    serviceIds,
+    SERVICE_FAN_OUT_CONCURRENCY,
+    async (serviceId) => ({
+      service_id: serviceId,
+      ...await healthStub(env, serviceId, scope).getStatus(),
+    }),
+  );
+  const now = Date.now();
+  return statuses.filter(
+    (status) => status.cooling_until !== null && status.cooling_until > now,
+  );
 }
 
 export function scheduleHealthUpdate(

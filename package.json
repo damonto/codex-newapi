@@ -10,14 +10,18 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.mjs",
+    "test": "npm run test:unit && npm run test:worker",
+    "test:unit": "tsx --test tests/*.test.mjs",
+    "test:worker": "vitest run",
     "models:sync": "node scripts/sync-codex-models.mjs",
     "config:validate": "tsx scripts/validate-config.mjs",
     "config:put": "tsx scripts/upload-config.mjs"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
     "wrangler": "^4.114.0"
   }
 }
