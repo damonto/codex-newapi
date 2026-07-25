@@ -6,7 +6,7 @@ This repository contains a TypeScript Cloudflare Worker that aggregates multiple
 
 ## Runtime and tooling
 
-- Use Node.js 22 or newer.
+- Use Node.js 24 or newer.
 - Use `npm test` for the full test suite and `npm run typecheck` for TypeScript checks.
 - Use `npm run config:validate -- config.json` before uploading configuration.
 - Use `npx wrangler deploy --dry-run` to validate the Worker bundle without deploying.

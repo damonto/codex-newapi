@@ -27,7 +27,7 @@ Codex's third-party API provider can request `/models` below its configured prov
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 24 or newer
 - A Cloudflare account with Workers and KV access
 
 ## Configuration
@@ -99,7 +99,7 @@ Then configure the Git deployment in the Cloudflare dashboard:
 5. Set the build command to `npm test && npm run typecheck && npm run config:validate -- config.example.json`.
 6. Set the deploy command to `npm run deploy` and select **Save and Deploy**.
 
-Cloudflare uses the `.node-version` file to select Node.js 22. After the connection is active, every push to `main` runs the checks and deploys the new Worker version automatically. Cloudflare can also create preview versions for non-production branches when branch builds are enabled.
+Cloudflare uses the `.node-version` file to select Node.js 24. After the connection is active, every push to `main` runs the checks and deploys the new Worker version automatically. Cloudflare can also create preview versions for non-production branches when branch builds are enabled.
 
 Code deployments do not overwrite the existing KV contents. Updating `config.json` is a separate operation and does not require a code commit or Worker redeploy:
 
