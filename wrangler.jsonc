@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "codex-newapi-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-24",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "CONFIG_KEY": "gateway-config",
+    "CONFIG_CACHE_TTL_SECONDS": "10",
+    "MODELS_CACHE_TTL_SECONDS": "30",
+    "LOG_LEVEL": "info"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CONFIG_KV",
+      // Replace this placeholder with the ID from `wrangler kv namespace create CONFIG_KV`.
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "HEALTH",
+        "class_name": "ServiceHealth"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ServiceHealth"]
+    }
+  ]
+}

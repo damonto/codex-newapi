@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-newapi-gateway.schema.json",
+  "title": "Codex NewAPI Gateway Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "services",
+    "api_keys",
+    "codex_auto_review"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "services": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "base_url",
+          "api_key",
+          "priority",
+          "models"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "base_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://"
+          },
+          "api_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "models": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "api_keys": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_key",
+          "services"
+        ],
+        "properties": {
+          "api_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "services": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "model_aliases": {
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "codex_auto_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service",
+        "model"
+      ],
+      "properties": {
+        "service": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

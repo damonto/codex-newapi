@@ -1,0 +1,36 @@
+{
+  "$schema": "./config.schema.json",
+  "services": [
+    {
+      "id": "newapi-primary",
+      "base_url": "https://primary.example.com/v1",
+      "api_key": "sk-upstream-primary",
+      "priority": 100,
+      "models": ["grok-4.5", "gpt-4.1"]
+    },
+    {
+      "id": "newapi-secondary",
+      "base_url": "https://secondary.example.com/v1",
+      "api_key": "sk-upstream-secondary",
+      "priority": 50,
+      "models": ["grok-4.5"]
+    }
+  ],
+  "api_keys": [
+    {
+      "api_key": "sk-gateway-client-a",
+      "services": ["newapi-primary", "newapi-secondary"]
+    },
+    {
+      "api_key": "sk-gateway-client-b",
+      "services": ["newapi-secondary"]
+    }
+  ],
+  "model_aliases": {
+    "gpt-5.6-sol": "grok-4.5"
+  },
+  "codex_auto_review": {
+    "service": "newapi-primary",
+    "model": "gpt-4.1"
+  }
+}
