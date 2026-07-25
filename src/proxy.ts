@@ -1,14 +1,14 @@
 import {
-  forwardRequestHeaders,
-  openAiError,
-  upstreamUrl,
-} from "./http.ts";
-import {
   recordServiceFailure,
   recordServiceSuccess,
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "./health.ts";
+import {
+  forwardRequestHeaders,
+  openAiError,
+  upstreamUrl,
+} from "./http.ts";
 import {
   bounded,
   elapsedMs,
@@ -180,10 +180,12 @@ export async function handleInference(
       status: upstreamResponse.status,
       duration_ms: elapsedMs(startedAt),
     });
-    await scheduleHealthUpdate(
-      context,
-      recordServiceFailure(env, service.id, requestId),
-    );
+    if (upstreamResponse.status === 400) {
+      await scheduleHealthUpdate(
+        context,
+        recordServiceFailure(env, service.id, requestId),
+      );
+    }
   }
   return upstreamResponse;
 }
