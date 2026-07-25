@@ -26,7 +26,7 @@ function gatewayConfig() {
 function testEnv(config) {
   const healthObjects = new Map();
   return {
-    CONFIG_KV: {
+    CODEX_NEWAPI_CONFIG_KV: {
       get: async () => JSON.stringify(config),
     },
     HEALTH: {

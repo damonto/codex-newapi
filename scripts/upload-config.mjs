@@ -19,7 +19,7 @@ const wranglerArgs = [
   "put",
   "gateway-config",
   "--binding",
-  "CONFIG_KV",
+  "CODEX_NEWAPI_CONFIG_KV",
   "--path",
   path,
   local ? "--local" : "--remote",

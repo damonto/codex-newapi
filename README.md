@@ -67,14 +67,57 @@ Copy `config.example.json` to `config.json` and edit it. The real configuration 
 
 ## Deploy
 
-The badge at the top opens Cloudflare's official Deploy to Workers flow for this repository. The repository intentionally contains a placeholder KV namespace ID, because the namespace belongs to your Cloudflare account. Create or select your namespace and replace the ID before the first production deployment.
+### Cloudflare Git deployment (recommended)
+
+The badge at the top opens Cloudflare's official deployment flow. You can also import the repository directly with [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/). Workers Builds connects the Worker to GitHub and automatically builds and deploys every new commit pushed to the production branch. A GitHub Actions workflow is not required.
+
+First, create the KV namespace once from a local checkout:
+
+```bash
+npm install
+npx wrangler login
+npx wrangler kv namespace create CODEX_NEWAPI_CONFIG_KV
+```
+
+Replace the placeholder `kv_namespaces[0].id` in `wrangler.jsonc` with the returned namespace ID and push that change to GitHub. A KV namespace ID identifies a resource and is safe to commit; the gateway API keys and upstream credentials are not. Keep those credentials only in the ignored `config.json` file and in Workers KV.
+
+Validate and upload the gateway configuration to the namespace:
+
+```bash
+cp config.example.json config.json
+# Edit config.json before continuing.
+npm run config:validate -- config.json
+npm run config:put -- config.json
+```
+
+Then configure the Git deployment in the Cloudflare dashboard:
+
+1. Go to **Workers & Pages** > **Create application** > **Import a repository**.
+2. Authorize the **Cloudflare Workers and Pages** GitHub application and select this repository.
+3. Use `main` as the production branch and `/` as the root directory.
+4. Ensure the Cloudflare Worker name is `codex-newapi`, matching `wrangler.jsonc`.
+5. Set the build command to `npm test && npm run typecheck && npm run config:validate -- config.example.json`.
+6. Set the deploy command to `npm run deploy` and select **Save and Deploy**.
+
+Cloudflare uses the `.node-version` file to select Node.js 22. After the connection is active, every push to `main` runs the checks and deploys the new Worker version automatically. Cloudflare can also create preview versions for non-production branches when branch builds are enabled.
+
+Code deployments do not overwrite the existing KV contents. Updating `config.json` is a separate operation and does not require a code commit or Worker redeploy:
+
+```bash
+npm run config:validate -- config.json
+npm run config:put -- config.json
+```
+
+The Worker reloads the KV configuration after its short configuration-cache TTL. Because `config.json` is intentionally ignored by Git, Cloudflare Workers Builds never receives or uploads the gateway credentials.
+
+### Manual deployment
 
 For a manual deployment:
 
 ```bash
 npm install
 npx wrangler login
-npx wrangler kv namespace create CONFIG_KV
+npx wrangler kv namespace create CODEX_NEWAPI_CONFIG_KV
 ```
 
 Put the returned namespace ID in `wrangler.jsonc` under `kv_namespaces[0].id`, then validate and upload the configuration:

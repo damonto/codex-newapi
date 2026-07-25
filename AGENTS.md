@@ -33,7 +33,8 @@ This repository contains a TypeScript Cloudflare Worker that aggregates multiple
 ## Cloudflare deployment
 
 - `wrangler.jsonc` contains a placeholder KV namespace ID. Replace it with an ID from the target Cloudflare account before deployment.
-- Upload the validated JSON configuration to the `CONFIG_KV` binding after creating the namespace.
+- Use Cloudflare Workers Builds Git integration for automatic deployments from `main`; do not add a GitHub Actions deployment workflow unless the user explicitly requests one.
+- Upload the validated JSON configuration to the `CODEX_NEWAPI_CONFIG_KV` binding after creating the namespace.
 - Keep Durable Object migrations compatible with the deployed Worker; do not rename the `ServiceHealth` class without a migration plan.
 - Model catalog fetches use a three-second timeout and cache successful aggregates for a short, configurable isolate-local TTL.
 - Strip proxy metadata, client credentials, and hop-by-hop headers before forwarding; preserve ordinary application headers.

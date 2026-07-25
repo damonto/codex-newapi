@@ -215,9 +215,13 @@ export async function loadConfig(env: Env, requestId?: string): Promise<GatewayC
   }
 
   try {
-    const raw = await env.CONFIG_KV.get(env.CONFIG_KEY ?? DEFAULT_CONFIG_KEY);
+    const raw = await env.CODEX_NEWAPI_CONFIG_KV.get(
+      env.CONFIG_KEY ?? DEFAULT_CONFIG_KEY,
+    );
     if (!raw) {
-      throw new ConfigError("configuration key is missing from CONFIG_KV");
+      throw new ConfigError(
+        "configuration key is missing from CODEX_NEWAPI_CONFIG_KV",
+      );
     }
     const config = parseConfig(JSON.parse(raw) as unknown);
     const ttlMs = cacheTtlMs(env);

@@ -24,7 +24,7 @@ export interface GatewayConfig {
 }
 
 export interface Env {
-  CONFIG_KV: KVNamespace;
+  CODEX_NEWAPI_CONFIG_KV: KVNamespace;
   HEALTH: DurableObjectNamespace;
   CONFIG_KEY?: string;
   CONFIG_CACHE_TTL_SECONDS?: string;

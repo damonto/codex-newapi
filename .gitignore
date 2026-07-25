@@ -6,3 +6,4 @@ config.local.json
 .dev.vars
 *.log
 .DS_Store
+.codex
