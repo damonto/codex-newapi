@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "codex-newapi-gateway",
+  "name": "codex-newapi",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-24",
   "workers_dev": true,
