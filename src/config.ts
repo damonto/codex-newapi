@@ -267,11 +267,6 @@ export function parseConfig(value: unknown): GatewayConfig {
   const modelAliases = parseAliases(value.model_aliases);
   for (const service of services) {
     for (const model of service.models) {
-      if (model === "codex-auto-review") {
-        throw new ConfigError(
-          `services.${service.id}.models must not contain reserved codex-auto-review`,
-        );
-      }
       if (Object.hasOwn(modelAliases, model)) {
         throw new ConfigError(
           `services.${service.id}.models must contain upstream names, not alias ${model}`,

@@ -30,6 +30,15 @@ test("parseConfig normalizes and validates a complete configuration", () => {
   assert.equal(config.model_aliases["gpt-5.6-sol"], "grok-4.5");
 });
 
+test("parseConfig allows codex-auto-review as the configured upstream model", () => {
+  const input = validConfig();
+  input.services[0].models = ["grok-4.5", "codex-auto-review"];
+  input.codex_auto_review.model = "codex-auto-review";
+
+  const config = parseConfig(input);
+  assert.equal(config.codex_auto_review.model, "codex-auto-review");
+});
+
 test("parseConfig enables retries only when a service configures them", () => {
   const input = validConfig();
   input.services[0].retry = {

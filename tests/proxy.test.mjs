@@ -65,6 +65,90 @@ test("mapping changes only the model value semantically", () => {
   assert.deepEqual(rewritten, { model: "grok-4.5", stream: true, input: "hello" });
 });
 
+test("Image API requests preserve the original JSON body when the model is unchanged", async () => {
+  const originalFetch = globalThis.fetch;
+  const fixture = inferenceFixture();
+  const originalBody = '{\n  "model": "model",\n  "prompt": "draw a fox"\n}\n';
+  let capturedBody;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    capturedBody = await request.text();
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await handleInference(
+      new Request("https://gateway.example/v1/images/generations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: originalBody,
+      }),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "images/generations",
+    );
+    assert.equal(response.status, 200);
+    assert.equal(capturedBody, originalBody);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("model aliases rewrite only the model and invalidate body digests", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.services[0].models = ["upstream-model"];
+  fixture.config.model_aliases = { "client-model": "upstream-model" };
+  fixture.config.codex_auto_review.model = "upstream-model";
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    captured = {
+      contentMd5: request.headers.get("content-md5"),
+      digest: request.headers.get("digest"),
+      contentDigest: request.headers.get("content-digest"),
+      contentEncoding: request.headers.get("content-encoding"),
+      body: JSON.parse(await request.text()),
+    };
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await handleInference(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-md5": "stale-md5",
+          digest: "stale-digest",
+          "content-digest": "stale-content-digest",
+          "content-encoding": "gzip",
+        },
+        body: JSON.stringify({ model: "client-model", input: "hello" }),
+      }),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(captured, {
+    contentMd5: null,
+    digest: null,
+    contentDigest: null,
+    contentEncoding: null,
+    body: {
+      model: "upstream-model",
+      input: "hello",
+    },
+  });
+});
+
 test("forwarding removes proxy metadata and client credentials", () => {
   const request = new Request("https://gateway.example/v1/responses", {
     headers: {
@@ -141,7 +225,7 @@ test("inference HTTP health only records 400 and 503 responses", async () => {
   }
 });
 
-test("inference retries configured HTTP statuses with configured delays and the same request", async () => {
+test("inference retries configured HTTP statuses with the same request", async () => {
   const retry = {
     status_codes: [429],
     delays_ms: [250, 500, 1_000],
@@ -187,9 +271,8 @@ test("inference retries configured HTTP statuses with configured delays and the 
     assert(requests.every((request) => request.url === "https://primary.example/v1/responses"));
     assert(requests.every((request) => request.method === "POST"));
     assert(requests.every((request) => request.authorization === "Bearer service-secret-key"));
-    assert(requests.every((request) =>
-      request.body === JSON.stringify({ model: "model", input: "hello" })
-    ));
+    const expectedBody = JSON.stringify({ model: "model", input: "hello" });
+    assert(requests.every((request) => request.body === expectedBody));
     assert.equal(fixture.calls.failure, 0);
     assert.equal(fixture.calls.success, 1);
   } finally {

@@ -89,6 +89,150 @@ test("Worker maps the model, replaces authorization, and preserves the upstream 
   }
 });
 
+test("Worker proxies Codex image generation and edits through model routing", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.services[0].models.push("gpt-image-2");
+  config.services[0].retry = { status_codes: [429], delays_ms: [0] };
+  config.model_aliases["image-client"] = "gpt-image-2";
+  const originalFetch = globalThis.fetch;
+  const captured = [];
+  let generationAttempts = 0;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    captured.push({
+      url: request.url,
+      authorization: request.headers.get("authorization"),
+      body: JSON.parse(await request.text()),
+    });
+    if (request.url.includes("/images/generations")) {
+      generationAttempts += 1;
+      if (generationAttempts === 1) {
+        return new Response('{"error":"retry"}', { status: 429 });
+      }
+    }
+    return new Response('{"data":[{"b64_json":"aW1hZ2U="}]}', {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-upstream-image": "yes",
+      },
+    });
+  };
+
+  try {
+    const env = testEnv(config);
+    const generation = await worker.fetch(
+      new Request("https://gateway.example/v1/images/generations?trace=generation", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "image-client",
+          prompt: "a fox in a field",
+          background: "auto",
+          quality: "auto",
+          size: "auto",
+        }),
+      }),
+      env,
+      {},
+    );
+    assert.equal(generation.status, 200);
+    assert.equal(generation.headers.get("x-upstream-image"), "yes");
+    assert.equal(await generation.text(), '{"data":[{"b64_json":"aW1hZ2U="}]}');
+
+    const edit = await worker.fetch(
+      new Request("https://gateway.example/images/edits?trace=edit", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-image-2",
+          prompt: "add a red hat",
+          images: [{ image_url: "data:image/png;base64,aW1hZ2U=" }],
+          background: "auto",
+          quality: "auto",
+          size: "auto",
+        }),
+      }),
+      env,
+      {},
+    );
+    assert.equal(edit.status, 200);
+    assert.equal(edit.headers.get("x-upstream-image"), "yes");
+    assert.equal(await edit.text(), '{"data":[{"b64_json":"aW1hZ2U="}]}');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const generationBody = {
+    model: "gpt-image-2",
+    prompt: "a fox in a field",
+    background: "auto",
+    quality: "auto",
+    size: "auto",
+  };
+  assert.deepEqual(captured, [
+    {
+      url: "https://primary.example/v1/images/generations?trace=generation",
+      authorization: "Bearer upstream-key",
+      body: generationBody,
+    },
+    {
+      url: "https://primary.example/v1/images/generations?trace=generation",
+      authorization: "Bearer upstream-key",
+      body: generationBody,
+    },
+    {
+      url: "https://primary.example/v1/images/edits?trace=edit",
+      authorization: "Bearer upstream-key",
+      body: {
+        model: "gpt-image-2",
+        prompt: "add a red hat",
+        images: [{ image_url: "data:image/png;base64,aW1hZ2U=" }],
+        background: "auto",
+        quality: "auto",
+        size: "auto",
+      },
+    },
+  ]);
+});
+
+test("Image API requests reject unavailable models before contacting an upstream service", async () => {
+  clearConfigCacheForTests();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/images/generations", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-image-2", prompt: "draw a fox" }),
+      }),
+      testEnv(gatewayConfig()),
+      {},
+    );
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, "model_not_found");
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("gateway logs correlate a request without logging credentials or body content", async () => {
   clearConfigCacheForTests();
   const originalFetch = globalThis.fetch;

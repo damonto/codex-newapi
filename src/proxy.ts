@@ -35,6 +35,12 @@ interface InferencePayload {
   model: string;
 }
 
+export type InferencePath =
+  | "responses"
+  | "chat/completions"
+  | "images/generations"
+  | "images/edits";
+
 export const MAX_INFERENCE_BODY_BYTES = 64 * 1024 * 1024;
 
 interface InferenceRetryOptions {
@@ -48,7 +54,7 @@ function wait(delayMs: number): Promise<void> {
 async function fetchWithConfiguredRetries(
   makeRequest: () => Request,
   requestId: string,
-  upstreamPath: "responses" | "chat/completions",
+  upstreamPath: InferencePath,
   serviceId: string,
   retry: ServiceRetryConfig | undefined,
   retryOptions: InferenceRetryOptions,
@@ -111,7 +117,7 @@ export async function handleInference(
   env: Env,
   config: GatewayConfig,
   client: ClientApiKeyConfig,
-  upstreamPath: "responses" | "chat/completions",
+  upstreamPath: InferencePath,
   requestId = "unknown",
   context?: HealthExecutionContext,
   retryOptions: InferenceRetryOptions = {},
@@ -188,7 +194,8 @@ export async function handleInference(
   registerSensitiveValues([service.api_key]);
   const headers = forwardRequestHeaders(request, service.api_key);
   headers.delete("content-length");
-  if (payload.model !== route.upstreamModel) {
+  const modelRewritten = payload.model !== route.upstreamModel;
+  if (modelRewritten) {
     headers.delete("content-md5");
     headers.delete("digest");
     headers.delete("content-digest");
@@ -197,10 +204,9 @@ export async function handleInference(
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
-  const body: BodyInit =
-    payload.model === route.upstreamModel
-      ? rawBody
-      : rewriteModel(originalText, payload, route.upstreamModel);
+  const body: BodyInit = modelRewritten
+    ? rewriteModel(originalText, payload, route.upstreamModel)
+    : rawBody;
   const incomingUrl = new URL(request.url);
   const startedAt = performance.now();
   logInfo("inference.upstream.request", {
@@ -208,7 +214,7 @@ export async function handleInference(
     endpoint: upstreamPath,
     service_id: service.id,
     upstream_model: bounded(route.upstreamModel, 160),
-    model_rewritten: payload.model !== route.upstreamModel,
+    model_rewritten: modelRewritten,
   });
 
   let upstreamResponse: Response;

@@ -17,10 +17,9 @@ import {
   requestUserAgent,
 } from "./log.ts";
 import { handleModels } from "./models.ts";
-import { handleInference } from "./proxy.ts";
+import { handleInference, type InferencePath } from "./proxy.ts";
 import type { ClientApiKeyConfig } from "./types.ts";
 
-type InferencePath = "responses" | "chat/completions";
 type GatewayEndpoint = "models" | "health" | InferencePath;
 
 type GatewayRoute =
@@ -46,6 +45,12 @@ function route(pathname: string): GatewayRoute | undefined {
     case "/chat/completions":
     case "/v1/chat/completions":
       return { endpoint: "chat/completions" };
+    case "/images/generations":
+    case "/v1/images/generations":
+      return { endpoint: "images/generations" };
+    case "/images/edits":
+    case "/v1/images/edits":
+      return { endpoint: "images/edits" };
     default:
       return undefined;
   }

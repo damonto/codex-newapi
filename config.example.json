@@ -7,7 +7,7 @@
       "api_key": "sk-upstream-primary",
       "disabled": false,
       "priority": 100,
-      "models": ["grok-4.5", "gpt-4.1"],
+      "models": ["grok-4.5", "gpt-4.1", "gpt-image-2"],
       "retry": {
         "status_codes": [429],
         "delays_ms": [250, 500, 1000]
