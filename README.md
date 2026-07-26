@@ -9,7 +9,7 @@ Use several NewAPI services through one Cloudflare Workers endpoint. It works wi
 - Combines multiple NewAPI services behind one address.
 - Routes models by priority and controls access with client API keys.
 - Supports model aliases and Codex auto review.
-- Proxies the JSON Image API generation and edit endpoints used by Codex.
+- Supports Codex Image Gen through configured `gpt-image-2` services.
 - Can retry selected status codes with a separate policy for each service.
 
 ## Quick setup
@@ -82,7 +82,7 @@ npm run deploy
 - `codex_auto_review`: service and model used by Codex auto review.
 - `retry`: optional status codes and delays. Each delay adds one retry; omitting this field disables retries.
 
-`services[].models` must list the real image model used by Codex, such as `gpt-image-2`.
+To use Image Gen, the client API key must have access to an enabled service whose `models` list includes `gpt-image-2`.
 
 After changing `config.json`, upload it again. A Worker redeploy is not required:
 
@@ -103,7 +103,7 @@ model_provider = "gateway"
 name = "Gateway"
 base_url = "https://codex-newapi.example.workers.dev/v1"
 wire_api = "responses"
-requires_openai_auth= true
+requires_openai_auth = true
 ```
 
 ## Automatic deployment

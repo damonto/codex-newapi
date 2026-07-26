@@ -23,6 +23,10 @@ import {
   logWarn,
   registerSensitiveValues,
 } from "./log.ts";
+import {
+  clientCanUseImageGeneration,
+  injectImageGenerationTool,
+} from "./response-tools.ts";
 import { resolveModelRoute, selectAvailableService } from "./routing.ts";
 import type {
   ClientApiKeyConfig,
@@ -42,6 +46,8 @@ export type InferencePath =
   | "images/edits";
 
 export const MAX_INFERENCE_BODY_BYTES = 64 * 1024 * 1024;
+
+const RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite";
 
 interface InferenceRetryOptions {
   wait?: (delayMs: number) => Promise<void>;
@@ -192,10 +198,16 @@ export async function handleInference(
   }
 
   registerSensitiveValues([service.api_key]);
+  const imageGenerationToolInjected = upstreamPath === "responses" &&
+    clientCanUseImageGeneration(config, client) &&
+    injectImageGenerationTool(
+      payload,
+      request.headers.get(RESPONSES_LITE_HEADER)?.toLowerCase() === "true",
+    );
   const headers = forwardRequestHeaders(request, service.api_key);
   headers.delete("content-length");
   const modelRewritten = payload.model !== route.upstreamModel;
-  if (modelRewritten) {
+  if (modelRewritten || imageGenerationToolInjected) {
     headers.delete("content-md5");
     headers.delete("digest");
     headers.delete("content-digest");
@@ -204,9 +216,12 @@ export async function handleInference(
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
-  const body: BodyInit = modelRewritten
-    ? rewriteModel(originalText, payload, route.upstreamModel)
-    : rawBody;
+  let body: BodyInit = rawBody;
+  if (imageGenerationToolInjected) {
+    body = JSON.stringify({ ...payload, model: route.upstreamModel });
+  } else if (modelRewritten) {
+    body = rewriteModel(originalText, payload, route.upstreamModel);
+  }
   const incomingUrl = new URL(request.url);
   const startedAt = performance.now();
   logInfo("inference.upstream.request", {
@@ -215,6 +230,7 @@ export async function handleInference(
     service_id: service.id,
     upstream_model: bounded(route.upstreamModel, 160),
     model_rewritten: modelRewritten,
+    image_generation_tool_injected: imageGenerationToolInjected,
   });
 
   let upstreamResponse: Response;
