@@ -6,10 +6,6 @@ import {
   handleInference,
   rewriteModel,
 } from "../src/proxy.ts";
-import {
-  clientCanUseImageGeneration,
-  injectImageGenerationTool,
-} from "../src/response-tools.ts";
 
 function inferenceFixture(retry) {
   const service = {
@@ -69,191 +65,34 @@ test("mapping changes only the model value semantically", () => {
   assert.deepEqual(rewritten, { model: "grok-4.5", stream: true, input: "hello" });
 });
 
-test("image generation availability follows the current client API key services", () => {
+test("Responses bodies remain unchanged when image generation is routable", async () => {
   const fixture = inferenceFixture();
-  fixture.config.services.push({
-    id: "images",
-    base_url: "https://images.example/v1",
-    api_key: "image-secret-key",
-    disabled: false,
-    priority: 50,
-    models: ["gpt-image-2"],
-  });
-
-  assert.equal(clientCanUseImageGeneration(fixture.config, fixture.client), false);
-  fixture.client.services.push("images");
-  assert.equal(clientCanUseImageGeneration(fixture.config, fixture.client), true);
-  fixture.config.services[1].disabled = true;
-  assert.equal(clientCanUseImageGeneration(fixture.config, fixture.client), false);
-});
-
-test("image generation injection supports normal Responses and skips Responses Lite", () => {
-  const normal = { model: "model", input: "draw", tools: [{ type: "web_search" }] };
-  assert.equal(injectImageGenerationTool(normal, false), true);
-  assert.deepEqual(normal.tools, [
-    { type: "web_search" },
-    { type: "image_generation", output_format: "png" },
-  ]);
-
-  const lite = {
-    model: "model",
-    input: [{ type: "additional_tools", role: "developer", tools: [] }],
-  };
-  assert.equal(injectImageGenerationTool(lite, true), false);
-  assert.deepEqual(lite.input[0].tools, []);
-  assert.equal(lite.tools, undefined);
-});
-
-test("image generation injection is idempotent and respects standalone image_gen", () => {
-  const hosted = {
-    model: "model",
-    tools: [{ type: "image_generation", output_format: "jpeg" }],
-  };
-  assert.equal(injectImageGenerationTool(hosted, false), false);
-  assert.equal(hosted.tools.length, 1);
-
-  const standalone = {
-    model: "model",
-    tools: [{ type: "namespace", name: "image_gen", tools: [] }],
-  };
-  assert.equal(injectImageGenerationTool(standalone, false), false);
-  assert.equal(standalone.tools.length, 1);
-});
-
-test("Responses requests inject image generation and invalidate body digests", async () => {
-  const fixture = inferenceFixture();
-  fixture.config.services.push({
-    id: "images",
-    base_url: "https://images.example/v1",
-    api_key: "image-secret-key",
-    disabled: false,
-    priority: 50,
-    models: ["gpt-image-2"],
-  });
-  fixture.client.services.push("images");
+  fixture.config.services[0].models.push("upstream-image-model");
+  fixture.config.model_aliases["gpt-image-2"] = "upstream-image-model";
+  const originalBody = '{\n  "model": "model",\n  "input": "draw",\n  "tools": []\n}\n';
   const originalFetch = globalThis.fetch;
   let captured;
   globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
     captured = {
-      url: request.url,
       contentMd5: request.headers.get("content-md5"),
       digest: request.headers.get("digest"),
       contentDigest: request.headers.get("content-digest"),
-      contentEncoding: request.headers.get("content-encoding"),
-      body: JSON.parse(await request.text()),
+      body: await request.text(),
     };
     return new Response(null, { status: 200 });
   };
 
   try {
     const response = await handleInference(
-      new Request("https://gateway.example/v1/responses?trace=image", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "content-md5": "stale-md5",
-          digest: "stale-digest",
-          "content-digest": "stale-content-digest",
-          "content-encoding": "gzip",
-        },
-        body: JSON.stringify({ model: "model", input: "draw", tools: [] }),
-      }),
-      fixture.env,
-      fixture.config,
-      fixture.client,
-      "responses",
-    );
-    assert.equal(response.status, 200);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  assert.deepEqual(captured, {
-    url: "https://primary.example/v1/responses?trace=image",
-    contentMd5: null,
-    digest: null,
-    contentDigest: null,
-    contentEncoding: null,
-    body: {
-      model: "model",
-      input: "draw",
-      tools: [{ type: "image_generation", output_format: "png" }],
-    },
-  });
-});
-
-test("Responses Lite requests preserve additional_tools without hosted injection", async () => {
-  const fixture = inferenceFixture();
-  fixture.config.services[0].models.push("gpt-image-2");
-  const originalFetch = globalThis.fetch;
-  let capturedBody;
-  globalThis.fetch = async (input, init) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    capturedBody = JSON.parse(await request.text());
-    return new Response(null, { status: 200 });
-  };
-
-  try {
-    const response = await handleInference(
       new Request("https://gateway.example/v1/responses", {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-openai-internal-codex-responses-lite": "true",
+          "content-md5": "original-md5",
+          digest: "original-digest",
+          "content-digest": "original-content-digest",
         },
-        body: JSON.stringify({
-          model: "model",
-          input: [
-            {
-              type: "additional_tools",
-              role: "developer",
-              tools: [{ type: "function", name: "shell" }],
-            },
-            { type: "message", role: "user", content: "draw" },
-          ],
-        }),
-      }),
-      fixture.env,
-      fixture.config,
-      fixture.client,
-      "responses",
-    );
-    assert.equal(response.status, 200);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  assert.deepEqual(capturedBody.input[0].tools, [
-    { type: "function", name: "shell" },
-  ]);
-  assert.equal(capturedBody.tools, undefined);
-});
-
-test("Responses bodies remain byte-for-byte unchanged without an accessible image service", async () => {
-  const fixture = inferenceFixture();
-  fixture.config.services.push({
-    id: "images",
-    base_url: "https://images.example/v1",
-    api_key: "image-secret-key",
-    disabled: false,
-    priority: 50,
-    models: ["gpt-image-2"],
-  });
-  const originalBody = '{\n  "model": "model",\n  "input": "hello"\n}\n';
-  const originalFetch = globalThis.fetch;
-  let capturedBody;
-  globalThis.fetch = async (input, init) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    capturedBody = await request.text();
-    return new Response(null, { status: 200 });
-  };
-
-  try {
-    const response = await handleInference(
-      new Request("https://gateway.example/v1/responses", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
         body: originalBody,
       }),
       fixture.env,
@@ -266,7 +105,12 @@ test("Responses bodies remain byte-for-byte unchanged without an accessible imag
     globalThis.fetch = originalFetch;
   }
 
-  assert.equal(capturedBody, originalBody);
+  assert.deepEqual(captured, {
+    contentMd5: "original-md5",
+    digest: "original-digest",
+    contentDigest: "original-content-digest",
+    body: originalBody,
+  });
 });
 
 test("Image API requests preserve the original JSON body when the model is unchanged", async () => {
@@ -294,6 +138,40 @@ test("Image API requests preserve the original JSON body when the model is uncha
     );
     assert.equal(response.status, 200);
     assert.equal(capturedBody, originalBody);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Image API requests route gpt-image-2 through its model alias", async () => {
+  const originalFetch = globalThis.fetch;
+  const fixture = inferenceFixture();
+  fixture.config.services[0].models = ["upstream-image-model"];
+  fixture.config.model_aliases = { "gpt-image-2": "upstream-image-model" };
+  let capturedBody;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    capturedBody = JSON.parse(await request.text());
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await handleInference(
+      new Request("https://gateway.example/v1/images/generations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-image-2", prompt: "draw a fox" }),
+      }),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "images/generations",
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(capturedBody, {
+      model: "upstream-image-model",
+      prompt: "draw a fox",
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

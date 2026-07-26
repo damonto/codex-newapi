@@ -82,7 +82,7 @@ npm run deploy
 - `codex_auto_review`: service and model used by Codex auto review.
 - `retry`: optional status codes and delays. Each delay adds one retry; omitting this field disables retries.
 
-To use Image Gen, the client API key must have access to an enabled service whose `models` list includes `gpt-image-2`.
+To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through `model_aliases`.
 
 After changing `config.json`, upload it again. A Worker redeploy is not required:
 
@@ -103,8 +103,10 @@ model_provider = "gateway"
 name = "Gateway"
 base_url = "https://codex-newapi.example.workers.dev/v1"
 wire_api = "responses"
-requires_openai_auth = true
+http_headers = { "x-openai-actor-authorization" = "codex-newapi" }
 ```
+
+To use the Image Gen tool, configure `http_headers = { "x-openai-actor-authorization" = "codex-newapi" }` for the provider.
 
 ## Automatic deployment
 
