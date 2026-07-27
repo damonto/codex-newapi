@@ -143,10 +143,6 @@ export function forwardRequestHeaders(request: Request, serviceApiKey: string): 
       headers.set(name, value);
     }
   });
-  const clientIp = request.headers.get("cf-connecting-ip")?.trim();
-  if (clientIp) {
-    headers.set("x-real-ip", clientIp);
-  }
   headers.set("authorization", `Bearer ${serviceApiKey}`);
   return headers;
 }

@@ -251,7 +251,7 @@ test("forwarding removes proxy metadata and client credentials", () => {
   assert.equal(headers.get("cookie"), null);
   assert.equal(headers.get("forwarded"), null);
   assert.equal(headers.get("x-forwarded-for"), null);
-  assert.equal(headers.get("x-real-ip"), "203.0.113.7");
+  assert.equal(headers.get("x-real-ip"), null);
   assert.equal(headers.get("cf-connecting-ip"), null);
   assert.equal(headers.get("x-api-key"), null);
   assert.equal(headers.get("content-length"), null);
@@ -259,7 +259,7 @@ test("forwarding removes proxy metadata and client credentials", () => {
   assert.equal(headers.get("content-type"), "application/json");
 });
 
-test("forwarding does not trust a client-supplied X-Real-IP without Cloudflare client IP", () => {
+test("forwarding strips a client-supplied X-Real-IP", () => {
   const request = new Request("https://gateway.example/v1/responses", {
     headers: { "x-real-ip": "198.51.100.99" },
   });
