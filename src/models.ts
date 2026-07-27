@@ -12,11 +12,11 @@ import {
   upstreamUrl,
 } from "./http.ts";
 import {
+  getServiceAvailability,
   recordServiceFailure,
   recordServiceSuccess,
   isHealthFailureStatus,
   scheduleHealthUpdate,
-  serviceIsAvailable,
   type HealthExecutionContext,
 } from "./health.ts";
 import {
@@ -26,15 +26,20 @@ import {
 import {
   elapsedMs,
   errorMessage,
-  logInfo,
-  logWarn,
   registerSensitiveValues,
+  type LogFields,
+  type RequestLogContext,
 } from "./log.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
   ServiceConfig,
 } from "./types.ts";
+import {
+  hasJsonUpstreamError,
+  upstreamErrorStatusFields,
+  upstreamResponseLogFields,
+} from "./upstream-log.ts";
 
 export const MODEL_CATALOG_TIMEOUT_MS = 3_000;
 export const MAX_MODEL_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
@@ -53,11 +58,18 @@ interface ServiceModelsResult {
   service: ServiceConfig;
   success: boolean;
   models: UpstreamModel[];
+  upstream?: LogFields;
+  upstreamError?: Promise<LogFields>;
 }
 
 interface ModelsCacheEntry {
   expiresAt: number;
   payload: JsonObject;
+}
+
+interface ModelsCollectionResult {
+  payload: JsonObject;
+  partialSuccess: boolean;
 }
 
 class ModelsRequestError extends Error {
@@ -73,7 +85,7 @@ class ModelsRequestError extends Error {
 }
 
 let modelsCache = new Map<string, ModelsCacheEntry>();
-let modelsInFlight = new Map<string, Promise<JsonObject>>();
+let modelsInFlight = new Map<string, Promise<ModelsCollectionResult>>();
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -124,7 +136,6 @@ async function fetchCatalogResponse(
       signal: controller.signal,
     });
     if (!response.ok) {
-      await discardBody(response.body);
       return { response };
     }
     const rawBody = await readBodyWithinLimit(
@@ -165,14 +176,11 @@ async function fetchServiceModels(
   service: ServiceConfig,
   requestId: string,
   context?: HealthExecutionContext,
+  requestLog?: RequestLogContext,
 ): Promise<ServiceModelsResult> {
   const incomingUrl = new URL(request.url);
   const headers = forwardRequestHeaders(request, service.api_key);
   const startedAt = performance.now();
-  logInfo("models.upstream.request", {
-    request_id: requestId,
-    service_id: service.id,
-  });
 
   try {
     const result = await fetchCatalogResponse(
@@ -183,48 +191,53 @@ async function fetchServiceModels(
         redirect: "manual",
       },
     );
+    const durationMs = elapsedMs(startedAt);
     if (!result.response.ok) {
-      logWarn("models.upstream.failed", {
-        request_id: requestId,
+      const upstream = {
         service_id: service.id,
-        status: result.response.status,
-        duration_ms: elapsedMs(startedAt),
-      });
+        outcome: "http_error",
+        duration_ms: durationMs,
+        ...upstreamErrorStatusFields(result.response),
+      };
+      const upstreamError = requestLog && hasJsonUpstreamError(result.response)
+        ? upstreamResponseLogFields(result.response, false)
+        : undefined;
+      if (!upstreamError) {
+        await discardBody(result.response.body);
+      }
       if (isHealthFailureStatus(result.response.status)) {
         await scheduleHealthUpdate(
           context,
           recordServiceFailure(env, service.id, requestId, "catalog"),
         );
       }
-      return { service, success: false, models: [] };
+      return {
+        service,
+        success: false,
+        models: [],
+        upstream,
+        upstreamError,
+      };
     }
     const models = parseUpstreamModels(result.body);
     if (!models) {
-      logWarn("models.upstream.invalid_response", {
-        request_id: requestId,
+      const upstream = {
         service_id: service.id,
-        status: result.response.status,
-        duration_ms: elapsedMs(startedAt),
-      });
+        outcome: "invalid_response",
+        duration_ms: durationMs,
+        ...upstreamErrorStatusFields(result.response),
+      };
       await scheduleHealthUpdate(
         context,
         recordServiceFailure(env, service.id, requestId, "catalog"),
       );
-      return { service, success: false, models: [] };
+      return { service, success: false, models: [], upstream };
     }
     const filteredModels = models.filter((model) => {
       if (model.id === config.codex_auto_review.model) {
         return serviceSupportsAutoReview(service, model.id);
       }
       return service.models.includes(model.id);
-    });
-    logInfo("models.upstream.succeeded", {
-      request_id: requestId,
-      service_id: service.id,
-      status: result.response.status,
-      upstream_model_count: models.length,
-      configured_model_count: filteredModels.length,
-      duration_ms: elapsedMs(startedAt),
     });
     await scheduleHealthUpdate(
       context,
@@ -236,17 +249,17 @@ async function fetchServiceModels(
       models: filteredModels,
     };
   } catch (error) {
-    logWarn("models.upstream.exception", {
-      request_id: requestId,
+    const upstream = {
       service_id: service.id,
+      outcome: "exception",
       error: errorMessage(error),
       duration_ms: elapsedMs(startedAt),
-    });
+    };
     await scheduleHealthUpdate(
       context,
       recordServiceFailure(env, service.id, requestId, "catalog"),
     );
-    return { service, success: false, models: [] };
+    return { service, success: false, models: [], upstream };
   }
 }
 
@@ -438,11 +451,6 @@ export function clearModelsCacheForTests(): void {
   modelsInFlight.clear();
 }
 
-function modelCount(payload: JsonObject, codexFormat: boolean): number {
-  const models = payload[codexFormat ? "models" : "data"];
-  return Array.isArray(models) ? models.length : 0;
-}
-
 async function collectModels(
   request: Request,
   env: Env,
@@ -451,21 +459,34 @@ async function collectModels(
   codexFormat: boolean,
   requestId: string,
   context?: HealthExecutionContext,
-): Promise<JsonObject> {
+  requestLog?: RequestLogContext,
+): Promise<ModelsCollectionResult> {
   const health = await mapWithConcurrency(
     configuredServices,
     MODEL_CATALOG_CONCURRENCY,
     async (service) => ({
       service,
-      available: await serviceIsAvailable(env, service.id, requestId, "catalog"),
+      availability: await getServiceAvailability(env, service.id, "catalog"),
     }),
   );
-  const available = health.filter((entry) => entry.available).map((entry) => entry.service);
+  const available = health
+    .filter((entry) => entry.availability.available)
+    .map((entry) => entry.service);
+  const routing = {
+    candidate_services: configuredServices.map((service) => service.id),
+    checked_available_services: available.map((service) => service.id),
+    service_checks: health.map((entry) => ({
+      service_id: entry.service.id,
+      ...entry.availability,
+    })),
+  };
+  if (health.some((entry) => entry.availability.reason === "health_read_failed")) {
+    requestLog?.warn({ routing });
+  } else {
+    requestLog?.set({ routing });
+  }
   if (available.length === 0) {
-    logWarn("models.request.no_available_service", {
-      request_id: requestId,
-      configured_service_count: configuredServices.length,
-    });
+    requestLog?.warn({ outcome: "service_cooling_down" });
     throw new ModelsRequestError(
       503,
       "No healthy service is currently available",
@@ -477,13 +498,37 @@ async function collectModels(
   const results = await mapWithConcurrency(
     available,
     MODEL_CATALOG_CONCURRENCY,
-    (service) => fetchServiceModels(request, env, config, service, requestId, context),
+    (service) => fetchServiceModels(
+      request,
+      env,
+      config,
+      service,
+      requestId,
+      context,
+      requestLog,
+    ),
   );
+  const upstreamErrors = results.flatMap((result) =>
+    !result.success && result.upstream ? [result.upstream] : []
+  );
+  if (upstreamErrors.length > 0) {
+    requestLog?.mergeSection("catalog", { upstream_errors: upstreamErrors });
+  }
+  if (requestLog && results.some((result) => result.upstreamError)) {
+    requestLog.defer((async () => {
+      for (const result of results) {
+        if (result.upstream && result.upstreamError) {
+          const fields = await result.upstreamError;
+          Object.assign(
+            result.upstream,
+            requestLog.limitUpstreamErrorFields(fields),
+          );
+        }
+      }
+    })());
+  }
   if (!results.some((result) => result.success)) {
-    logWarn("models.request.no_upstream_catalog", {
-      request_id: requestId,
-      attempted_service_count: available.length,
-    });
+    requestLog?.warn({ outcome: "upstream_unavailable" });
     throw new ModelsRequestError(
       502,
       "No upstream model catalog could be retrieved",
@@ -493,11 +538,13 @@ async function collectModels(
   }
 
   const standardModels = aggregateStandardModels(results, config.model_aliases);
-  if (!codexFormat) {
-    return { object: "list", data: standardModels };
-  }
-  const ids = codexModelIds(standardModels, results, config);
-  return { models: aggregateCodexModels(ids) };
+  const payload = !codexFormat
+    ? { object: "list", data: standardModels }
+    : { models: aggregateCodexModels(codexModelIds(standardModels, results, config)) };
+  return {
+    payload,
+    partialSuccess: upstreamErrors.length > 0,
+  };
 }
 
 export async function handleModels(
@@ -507,6 +554,7 @@ export async function handleModels(
   client: ClientApiKeyConfig,
   requestId = "unknown",
   context?: HealthExecutionContext,
+  requestLog?: RequestLogContext,
 ): Promise<Response> {
   const configuredServices = allowedServices(config, client);
   registerSensitiveValues([
@@ -515,32 +563,26 @@ export async function handleModels(
   ]);
   const codexFormat = isCodexUserAgent(request);
   const ttlMs = cacheTtlMs(env);
-  logInfo("models.request.started", {
-    request_id: requestId,
-    codex_format: codexFormat,
-    configured_service_count: configuredServices.length,
+  requestLog?.set({
+    routing: {
+      candidate_services: configuredServices.map((service) => service.id),
+    },
+  });
+  requestLog?.mergeSection("catalog", {
+    response_format: codexFormat ? "codex" : "standard",
     cache_enabled: ttlMs > 0,
   });
   const cacheKey = await modelsCacheKey(request, config, client, codexFormat);
 
   const cachedPayload = ttlMs > 0 ? readModelsCache(cacheKey) : undefined;
   if (cachedPayload) {
-    logInfo("models.cache.hit", {
-      request_id: requestId,
-      response_format: codexFormat ? "codex" : "standard",
-      returned_model_count: modelCount(cachedPayload, codexFormat),
-    });
-    logInfo("models.request.completed", {
-      request_id: requestId,
-      response_format: codexFormat ? "codex" : "standard",
-      returned_model_count: modelCount(cachedPayload, codexFormat),
-      cache_hit: true,
-    });
+    requestLog?.mergeSection("catalog", { cache: "hit" });
     return jsonResponse(cachedPayload);
   }
 
   let collection = modelsInFlight.get(cacheKey);
   if (!collection) {
+    requestLog?.mergeSection("catalog", { cache: "miss" });
     collection = collectModels(
       request,
       env,
@@ -549,24 +591,26 @@ export async function handleModels(
       codexFormat,
       requestId,
       context,
+      requestLog,
     );
     modelsInFlight.set(cacheKey, collection);
   } else {
-    logInfo("models.cache.in_flight", { request_id: requestId });
+    requestLog?.mergeSection("catalog", { cache: "in_flight" });
   }
 
   try {
-    const payload = await collection;
-    writeModelsCache(cacheKey, payload, ttlMs);
-    logInfo("models.request.completed", {
-      request_id: requestId,
-      response_format: codexFormat ? "codex" : "standard",
-      returned_model_count: modelCount(payload, codexFormat),
-      cache_hit: false,
-    });
-    return jsonResponse(payload);
+    const result = await collection;
+    if (result.partialSuccess) {
+      requestLog?.warn({ outcome: "partial_success" });
+    }
+    writeModelsCache(cacheKey, result.payload, ttlMs);
+    return jsonResponse(result.payload);
   } catch (error) {
     if (error instanceof ModelsRequestError) {
+      requestLog?.warn({
+        outcome: error.code,
+        error: error.messageText,
+      });
       return openAiError(error.status, error.messageText, error.type, error.code);
     }
     throw error;

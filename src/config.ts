@@ -5,7 +5,7 @@ import type {
   ServiceConfig,
   ServiceRetryConfig,
 } from "./types.ts";
-import { errorMessage, logError, logInfo, logWarn } from "./log.ts";
+import { errorMessage, type RequestLogContext } from "./log.ts";
 
 const DEFAULT_CONFIG_KEY = "gateway-config";
 const DEFAULT_CACHE_TTL_SECONDS = 10;
@@ -313,9 +313,14 @@ function cacheTtlMs(env: Env): number {
   return Math.min(configured, 300) * 1000;
 }
 
-export async function loadConfig(env: Env, requestId?: string): Promise<GatewayConfig> {
+export async function loadConfig(
+  env: Env,
+  _requestId?: string,
+  requestLog?: RequestLogContext,
+): Promise<GatewayConfig> {
   const now = Date.now();
   if (cached && cached.expiresAt > now) {
+    requestLog?.mergeSection("configuration", { source: "cache" });
     return cached.config;
   }
 
@@ -331,27 +336,22 @@ export async function loadConfig(env: Env, requestId?: string): Promise<GatewayC
     const config = parseConfig(JSON.parse(raw) as unknown);
     const ttlMs = cacheTtlMs(env);
     cached = { config, expiresAt: now + ttlMs };
-    logInfo("config.loaded", {
-      request_id: requestId,
-      service_count: config.services.length,
-      client_key_count: config.api_keys.length,
-      alias_count: Object.keys(config.model_aliases).length,
+    requestLog?.mergeSection("configuration", {
+      source: "kv",
       cache_ttl_ms: ttlMs,
     });
     return config;
   } catch (error) {
     if (cached) {
       cached.expiresAt = now + 5000;
-      logWarn("config.load.failed_using_cache", {
-        request_id: requestId,
-        error: errorMessage(error),
+      requestLog?.warn({
+        configuration: {
+          source: "stale_cache",
+          error: errorMessage(error),
+        },
       });
       return cached.config;
     }
-    logError("config.load.failed", {
-      request_id: requestId,
-      error: errorMessage(error),
-    });
     if (error instanceof ConfigError) {
       throw error;
     }

@@ -1,4 +1,7 @@
-import { serviceIsAvailable } from "./health.ts";
+import {
+  getServiceAvailability,
+  type ServiceAvailability,
+} from "./health.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
@@ -9,6 +12,15 @@ export interface ModelRoute {
   requestedModel: string;
   upstreamModel: string;
   services: ServiceConfig[];
+}
+
+export interface ServiceSelectionCheck extends ServiceAvailability {
+  service_id: string;
+}
+
+export interface ServiceSelection {
+  service?: ServiceConfig;
+  checks: ServiceSelectionCheck[];
 }
 
 export function serviceSupportsModel(
@@ -74,17 +86,27 @@ export function resolveModelRoute(
   };
 }
 
+export async function selectAvailableServiceWithDetails(
+  env: Env,
+  route: ModelRoute,
+): Promise<ServiceSelection> {
+  const checks: ServiceSelectionCheck[] = [];
+  for (const service of route.services) {
+    const availability = await getServiceAvailability(env, service.id);
+    checks.push({ service_id: service.id, ...availability });
+    if (availability.available) {
+      return { service, checks };
+    }
+  }
+  return { checks };
+}
+
 export async function selectAvailableService(
   env: Env,
   route: ModelRoute,
-  requestId?: string,
+  _requestId?: string,
 ): Promise<ServiceConfig | undefined> {
-  for (const service of route.services) {
-    if (await serviceIsAvailable(env, service.id, requestId)) {
-      return service;
-    }
-  }
-  return undefined;
+  return (await selectAvailableServiceWithDetails(env, route)).service;
 }
 
 export function allowedServices(

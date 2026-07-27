@@ -19,16 +19,24 @@ import {
   bounded,
   elapsedMs,
   errorMessage,
-  logInfo,
-  logWarn,
   registerSensitiveValues,
+  type RequestLogContext,
 } from "./log.ts";
-import { resolveModelRoute, selectAvailableService } from "./routing.ts";
+import {
+  resolveModelRoute,
+  selectAvailableServiceWithDetails,
+} from "./routing.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
   ServiceRetryConfig,
 } from "./types.ts";
+import {
+  hasJsonUpstreamError,
+  upstreamErrorStatusFields,
+  upstreamResponseFields,
+  upstreamResponseLogFields,
+} from "./upstream-log.ts";
 
 interface InferencePayload {
   [key: string]: unknown;
@@ -47,41 +55,67 @@ interface InferenceRetryOptions {
   wait?: (delayMs: number) => Promise<void>;
 }
 
+interface UpstreamAttemptLog {
+  attempt: number;
+  status?: number;
+  duration_ms: number;
+  retry_delay_ms?: number;
+  error?: string;
+}
+
+interface FetchWithRetriesResult {
+  response?: Response;
+  attempts: UpstreamAttemptLog[];
+  error?: unknown;
+}
+
 function wait(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 async function fetchWithConfiguredRetries(
   makeRequest: () => Request,
-  requestId: string,
-  upstreamPath: InferencePath,
-  serviceId: string,
   retry: ServiceRetryConfig | undefined,
   retryOptions: InferenceRetryOptions,
-): Promise<Response> {
-  let response = await fetch(makeRequest());
-  if (retry === undefined) {
-    return response;
-  }
-  for (const [retryIndex, delayMs] of retry.delays_ms.entries()) {
-    if (!retry.status_codes.includes(response.status)) {
-      break;
+): Promise<FetchWithRetriesResult> {
+  const attempts: UpstreamAttemptLog[] = [];
+  for (let attemptIndex = 0; ; attemptIndex += 1) {
+    const attemptStartedAt = performance.now();
+    let response: Response;
+    try {
+      response = await fetch(makeRequest());
+    } catch (error) {
+      attempts.push({
+        attempt: attemptIndex + 1,
+        duration_ms: elapsedMs(attemptStartedAt),
+        error: errorMessage(error),
+      });
+      return { attempts, error };
     }
 
-    await discardBody(response.body);
-    logWarn("inference.upstream.retry_scheduled", {
-      request_id: requestId,
-      endpoint: upstreamPath,
-      service_id: serviceId,
+    const attempt: UpstreamAttemptLog = {
+      attempt: attemptIndex + 1,
       status: response.status,
-      retry: retryIndex + 1,
-      max_retries: retry.delays_ms.length,
-      retry_delay_ms: delayMs,
-    });
-    await (retryOptions.wait ?? wait)(delayMs);
-    response = await fetch(makeRequest());
+      duration_ms: elapsedMs(attemptStartedAt),
+    };
+    attempts.push(attempt);
+    const delayMs = retry?.delays_ms[attemptIndex];
+    if (
+      retry === undefined ||
+      delayMs === undefined ||
+      !retry.status_codes.includes(response.status)
+    ) {
+      return { response, attempts };
+    }
+
+    attempt.retry_delay_ms = delayMs;
+    await discardBody(response.body);
+    try {
+      await (retryOptions.wait ?? wait)(delayMs);
+    } catch (error) {
+      return { attempts, error };
+    }
   }
-  return response;
 }
 
 function parseInferencePayload(text: string): InferencePayload {
@@ -121,6 +155,7 @@ export async function handleInference(
   requestId = "unknown",
   context?: HealthExecutionContext,
   retryOptions: InferenceRetryOptions = {},
+  requestLog?: RequestLogContext,
 ): Promise<Response> {
   let rawBody: Uint8Array<ArrayBuffer>;
   try {
@@ -131,10 +166,9 @@ export async function handleInference(
     );
   } catch (error) {
     if (error instanceof BodyTooLargeError) {
-      logWarn("inference.request.too_large", {
-        request_id: requestId,
-        endpoint: upstreamPath,
-        max_body_bytes: MAX_INFERENCE_BODY_BYTES,
+      requestLog?.warn({
+        outcome: "request_too_large",
+        inference: { max_body_bytes: MAX_INFERENCE_BODY_BYTES },
       });
       return openAiError(
         413,
@@ -146,48 +180,49 @@ export async function handleInference(
     throw error;
   }
   const originalText = new TextDecoder().decode(rawBody);
-  logInfo("inference.request.started", {
-    request_id: requestId,
-    endpoint: upstreamPath,
-    body_bytes: rawBody.byteLength,
-  });
+  requestLog?.mergeSection("inference", { body_bytes: rawBody.byteLength });
   let payload: InferencePayload;
   try {
     payload = parseInferencePayload(originalText);
   } catch (error) {
-    logWarn("inference.request.invalid", {
-      request_id: requestId,
-      endpoint: upstreamPath,
+    requestLog?.warn({
+      outcome: "invalid_request",
       error: errorMessage(error),
     });
     return openAiError(400, error instanceof Error ? error.message : "invalid request body");
   }
 
   const route = resolveModelRoute(config, client, payload.model);
-  logInfo("inference.route.resolved", {
-    request_id: requestId,
-    endpoint: upstreamPath,
-    requested_model: bounded(payload.model, 160),
-    upstream_model: bounded(route.upstreamModel, 160),
-    alias_applied: payload.model !== route.upstreamModel,
-    candidate_service_ids: route.services.map((service) => service.id),
+  const candidateServices = route.services.map((service) => service.id);
+  requestLog?.set({
+    model: {
+      requested: bounded(payload.model, 160),
+      upstream: bounded(route.upstreamModel, 160),
+      alias_applied: payload.model !== route.upstreamModel,
+    },
+    routing: { candidate_services: candidateServices },
   });
   if (route.services.length === 0) {
-    logWarn("inference.route.unavailable", {
-      request_id: requestId,
-      endpoint: upstreamPath,
-      requested_model: bounded(payload.model, 160),
-    });
+    requestLog?.warn({ outcome: "model_not_found" });
     return openAiError(400, `Model ${payload.model} is not available for this API key`, "invalid_request_error", "model_not_found");
   }
-  const service = await selectAvailableService(env, route, requestId);
+  const selection = await selectAvailableServiceWithDetails(env, route);
+  const service = selection.service;
+  const routing = {
+    candidate_services: candidateServices,
+    checked_available_services: selection.checks
+      .filter((check) => check.available)
+      .map((check) => check.service_id),
+    service_checks: selection.checks,
+    ...(service ? { selected_service: service.id } : {}),
+  };
+  if (selection.checks.some((check) => check.reason === "health_read_failed")) {
+    requestLog?.warn({ routing });
+  } else {
+    requestLog?.set({ routing });
+  }
   if (!service) {
-    logWarn("inference.route.cooling_down", {
-      request_id: requestId,
-      endpoint: upstreamPath,
-      requested_model: bounded(payload.model, 160),
-      candidate_service_ids: route.services.map((entry) => entry.id),
-    });
+    requestLog?.warn({ outcome: "service_cooling_down" });
     return openAiError(503, `No healthy service is currently available for model ${payload.model}`, "server_error", "service_cooling_down");
   }
 
@@ -210,36 +245,28 @@ export async function handleInference(
   }
   const incomingUrl = new URL(request.url);
   const startedAt = performance.now();
-  logInfo("inference.upstream.request", {
-    request_id: requestId,
-    endpoint: upstreamPath,
-    service_id: service.id,
-    upstream_model: bounded(route.upstreamModel, 160),
-    model_rewritten: modelRewritten,
-  });
-
-  let upstreamResponse: Response;
-  try {
-    upstreamResponse = await fetchWithConfiguredRetries(
-      () => new Request(upstreamUrl(service, upstreamPath, incomingUrl.search), {
-        method: request.method,
-        headers,
-        body,
-        redirect: "manual",
-      }),
-      requestId,
-      upstreamPath,
-      service.id,
-      service.retry,
-      retryOptions,
-    );
-  } catch (error) {
-    logWarn("inference.upstream.exception", {
-      request_id: requestId,
-      endpoint: upstreamPath,
-      service_id: service.id,
-      error: errorMessage(error),
-      duration_ms: elapsedMs(startedAt),
+  const result = await fetchWithConfiguredRetries(
+    () => new Request(upstreamUrl(service, upstreamPath, incomingUrl.search), {
+      method: request.method,
+      headers,
+      body,
+      redirect: "manual",
+    }),
+    service.retry,
+    retryOptions,
+  );
+  const upstreamDurationMs = elapsedMs(startedAt);
+  if (!result.response) {
+    requestLog?.warn({
+      outcome: "upstream_unavailable",
+      upstream: {
+        service_id: service.id,
+        model: bounded(route.upstreamModel, 160),
+        model_rewritten: modelRewritten,
+        duration_ms: upstreamDurationMs,
+        attempts: result.attempts,
+        error: errorMessage(result.error),
+      },
     });
     await scheduleHealthUpdate(
       context,
@@ -248,26 +275,51 @@ export async function handleInference(
     return openAiError(502, "The selected upstream service could not be reached", "server_error", "upstream_unavailable");
   }
 
-  if (upstreamResponse.ok) {
-    logInfo("inference.upstream.succeeded", {
-      request_id: requestId,
-      endpoint: upstreamPath,
+  const upstreamResponse = result.response;
+  if (requestLog) {
+    const upstreamBase = {
       service_id: service.id,
-      status: upstreamResponse.status,
-      duration_ms: elapsedMs(startedAt),
-    });
+      model: bounded(route.upstreamModel, 160),
+      model_rewritten: modelRewritten,
+      duration_ms: upstreamDurationMs,
+      attempts: result.attempts,
+    };
+    if (upstreamResponse.ok) {
+      requestLog.set({
+        outcome: "success",
+        upstream: {
+          ...upstreamBase,
+          ...upstreamResponseFields(upstreamResponse),
+        },
+      });
+    } else {
+      requestLog.warn({
+        outcome: "upstream_error",
+        upstream: {
+          ...upstreamBase,
+          ...upstreamErrorStatusFields(upstreamResponse),
+        },
+      });
+      if (hasJsonUpstreamError(upstreamResponse)) {
+        const responseFields = upstreamResponseLogFields(upstreamResponse);
+        requestLog.defer(responseFields.then((fields) => {
+          requestLog.set({
+            upstream: {
+              ...upstreamBase,
+              ...requestLog.limitUpstreamErrorFields(fields),
+            },
+          });
+        }));
+      }
+    }
+  }
+
+  if (upstreamResponse.ok) {
     await scheduleHealthUpdate(
       context,
       recordServiceSuccess(env, service.id, requestId),
     );
   } else {
-    logWarn("inference.upstream.failed", {
-      request_id: requestId,
-      endpoint: upstreamPath,
-      service_id: service.id,
-      status: upstreamResponse.status,
-      duration_ms: elapsedMs(startedAt),
-    });
     if (isHealthFailureStatus(upstreamResponse.status)) {
       await scheduleHealthUpdate(
         context,

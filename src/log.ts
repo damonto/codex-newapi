@@ -1,7 +1,14 @@
 export type LogFields = Record<string, unknown>;
 export type LogLevel = "info" | "warn" | "error" | "off";
+type EmittedLogLevel = Exclude<LogLevel, "off">;
 
-const LOG_LEVEL_ORDER: Record<Exclude<LogLevel, "off">, number> = {
+export interface LogExecutionContext {
+  waitUntil?: (promise: Promise<unknown>) => void;
+}
+
+export const MAX_REQUEST_LOGGED_UPSTREAM_ERROR_BYTES = 32 * 1024;
+
+const LOG_LEVEL_ORDER: Record<EmittedLogLevel, number> = {
   info: 1,
   warn: 2,
   error: 3,
@@ -83,22 +90,23 @@ function sanitizeFields(fields: LogFields): LogFields {
   return sanitizeValue(fields, undefined, new WeakSet<object>()) as LogFields;
 }
 
-function shouldEmit(level: Exclude<LogLevel, "off">): boolean {
+function shouldEmit(level: EmittedLogLevel): boolean {
   if (currentLogLevel === "off") {
     return false;
   }
   return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[currentLogLevel];
 }
 
-function emit(level: Exclude<LogLevel, "off">, event: string, fields: LogFields = {}): void {
+function emit(level: EmittedLogLevel, event: string, fields: LogFields = {}): void {
   if (!shouldEmit(level)) {
     return;
   }
-  let entry: string;
+  let entry: LogFields;
   try {
-    entry = JSON.stringify({ event: redactText(event), ...sanitizeFields(fields) });
+    entry = { event: redactText(event), ...sanitizeFields(fields) };
+    JSON.stringify(entry);
   } catch {
-    entry = JSON.stringify({ event: redactText(event), logging_error: "fields_not_serializable" });
+    entry = { event: redactText(event), logging_error: "fields_not_serializable" };
   }
   if (level === "error") {
     console.error(entry);
@@ -119,6 +127,145 @@ export function logWarn(event: string, fields?: LogFields): void {
 
 export function logError(event: string, fields?: LogFields): void {
   emit("error", event, fields);
+}
+
+function strongerLevel(
+  left: EmittedLogLevel,
+  right: EmittedLogLevel,
+): EmittedLogLevel {
+  return LOG_LEVEL_ORDER[left] >= LOG_LEVEL_ORDER[right] ? left : right;
+}
+
+function isLogFields(value: unknown): value is LogFields {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export class RequestLogContext {
+  private readonly startedAt = performance.now();
+  private readonly fields: LogFields;
+  private readonly deferred: Promise<void>[] = [];
+  private level: EmittedLogLevel = "info";
+  private completed = false;
+  private completionPromise?: Promise<void>;
+  private remainingErrorBodyBytes = MAX_REQUEST_LOGGED_UPSTREAM_ERROR_BYTES;
+
+  constructor(
+    readonly requestId: string,
+    request: Request,
+    endpoint?: string,
+    private readonly executionContext?: LogExecutionContext,
+  ) {
+    const url = new URL(request.url);
+    this.fields = {
+      request_id: requestId,
+      method: request.method,
+      path: url.pathname,
+      ...(endpoint === undefined ? {} : { endpoint }),
+    };
+  }
+
+  set(fields: LogFields): void {
+    Object.assign(this.fields, fields);
+  }
+
+  mergeSection(section: string, fields: LogFields): void {
+    const current = this.fields[section];
+    this.fields[section] = isLogFields(current)
+      ? { ...current, ...fields }
+      : { ...fields };
+  }
+
+  warn(fields: LogFields = {}): void {
+    this.level = strongerLevel(this.level, "warn");
+    this.set(fields);
+  }
+
+  error(fields: LogFields = {}): void {
+    this.level = "error";
+    this.set(fields);
+  }
+
+  defer(task: Promise<void>): void {
+    if (this.completed) {
+      throw new Error("request log is already completed");
+    }
+    this.deferred.push(task);
+  }
+
+  limitUpstreamErrorFields(fields: LogFields): LogFields {
+    const bytes = fields.error_body_bytes;
+    if (
+      !Object.hasOwn(fields, "error_json") ||
+      typeof bytes !== "number" ||
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0
+    ) {
+      return fields;
+    }
+    if (bytes <= this.remainingErrorBodyBytes) {
+      this.remainingErrorBodyBytes -= bytes;
+      return fields;
+    }
+    const { error_json: _errorJson, ...metadata } = fields;
+    return {
+      ...metadata,
+      error_json_omitted: "request_log_budget_exceeded",
+      error_body_limit_bytes: MAX_REQUEST_LOGGED_UPSTREAM_ERROR_BYTES,
+    };
+  }
+
+  private emitSummary(status: number, ok: boolean, durationMs: number): void {
+    emit(this.level, "request.summary", {
+      ...this.fields,
+      outcome: this.fields.outcome ?? (ok ? "success" : "failed"),
+      response_status: status,
+      duration_ms: durationMs,
+    });
+  }
+
+  complete(response: Response): Response {
+    if (this.completed) {
+      return response;
+    }
+    this.completed = true;
+    if (response.status >= 500) {
+      this.level = "error";
+    } else if (response.status >= 400) {
+      this.level = strongerLevel(this.level, "warn");
+    }
+    const status = response.status;
+    const ok = response.ok;
+    const durationMs = elapsedMs(this.startedAt);
+    if (this.deferred.length === 0) {
+      this.emitSummary(status, ok, durationMs);
+      return response;
+    }
+
+    const completion = Promise.allSettled(this.deferred).then((results) => {
+      const errors = results.flatMap((result) =>
+        result.status === "rejected" ? [errorMessage(result.reason)] : []
+      );
+      if (errors.length > 0) {
+        this.mergeSection("logging", { deferred_errors: errors });
+      }
+      this.emitSummary(status, ok, durationMs);
+    });
+    this.completionPromise = completion;
+    if (typeof this.executionContext?.waitUntil === "function") {
+      try {
+        this.executionContext.waitUntil(completion);
+      } catch {
+        void completion;
+      }
+    } else {
+      void completion;
+    }
+    return response;
+  }
+
+  waitForCompletion(): Promise<void> {
+    return this.completionPromise ?? Promise.resolve();
+  }
 }
 
 export function newRequestId(): string {

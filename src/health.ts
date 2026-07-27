@@ -2,7 +2,7 @@ import {
   mapWithConcurrency,
   SERVICE_FAN_OUT_CONCURRENCY,
 } from "./concurrency.ts";
-import { errorMessage, logInfo, logWarn } from "./log.ts";
+import { errorMessage, logWarn } from "./log.ts";
 import type { ServiceHealthSnapshot } from "./types.ts";
 
 export const FAILURE_THRESHOLD = 10;
@@ -27,6 +27,19 @@ export interface StoredServiceHealthState {
 
 export interface CoolingServiceHealth extends ServiceHealthSnapshot {
   service_id: string;
+}
+
+export type ServiceAvailabilityReason =
+  | "available"
+  | "cooling"
+  | "health_read_failed";
+
+export interface ServiceAvailability {
+  available: boolean;
+  reason: ServiceAvailabilityReason;
+  failures?: number;
+  cooling_until?: number | null;
+  error?: string;
 }
 
 export class ServiceHealthState {
@@ -122,34 +135,36 @@ function healthStub(env: Env, serviceId: string, scope: HealthScope) {
   return env.HEALTH.getByName(healthObjectName(serviceId, scope));
 }
 
-export async function serviceIsAvailable(
+export async function getServiceAvailability(
   env: Env,
   serviceId: string,
-  requestId?: string,
   scope: HealthScope = "inference",
-): Promise<boolean> {
+): Promise<ServiceAvailability> {
   try {
     const snapshot = await healthStub(env, serviceId, scope).getStatus();
     const available = snapshot.cooling_until === null || snapshot.cooling_until <= Date.now();
-    if (!available) {
-      logWarn("health.service.cooling", {
-        request_id: requestId,
-        service_id: serviceId,
-        scope,
-        failures: snapshot.failures,
-        cooling_until: snapshot.cooling_until,
-      });
-    }
-    return available;
+    return {
+      available,
+      reason: available ? "available" : "cooling",
+      failures: snapshot.failures,
+      cooling_until: snapshot.cooling_until,
+    };
   } catch (error) {
-    logWarn("health.status.read_failed", {
-      request_id: requestId,
-      service_id: serviceId,
-      scope,
+    return {
+      available: true,
+      reason: "health_read_failed",
       error: errorMessage(error),
-    });
-    return true;
+    };
   }
+}
+
+export async function serviceIsAvailable(
+  env: Env,
+  serviceId: string,
+  _requestId?: string,
+  scope: HealthScope = "inference",
+): Promise<boolean> {
+  return (await getServiceAvailability(env, serviceId, scope)).available;
 }
 
 async function record(
@@ -205,15 +220,10 @@ export function recordServiceFailure(
 export async function clearServiceHealth(
   env: Env,
   serviceId: string,
-  requestId?: string,
+  _requestId?: string,
   scope: HealthScope = "inference",
 ): Promise<ServiceHealthSnapshot> {
   const snapshot = await healthStub(env, serviceId, scope).clear();
-  logInfo("health.cooldown.cleared", {
-    request_id: requestId,
-    service_id: serviceId,
-    scope,
-  });
   return snapshot;
 }
 

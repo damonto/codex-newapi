@@ -238,6 +238,8 @@ test("forwarding removes proxy metadata and client credentials", () => {
       cookie: "session=secret",
       forwarded: "for=127.0.0.1",
       "x-forwarded-for": "127.0.0.1",
+      "x-real-ip": "198.51.100.99",
+      "cf-connecting-ip": "203.0.113.7",
       "x-api-key": "client",
       "content-length": "10",
       "x-tenant": "tenant-a",
@@ -249,10 +251,20 @@ test("forwarding removes proxy metadata and client credentials", () => {
   assert.equal(headers.get("cookie"), null);
   assert.equal(headers.get("forwarded"), null);
   assert.equal(headers.get("x-forwarded-for"), null);
+  assert.equal(headers.get("x-real-ip"), "203.0.113.7");
+  assert.equal(headers.get("cf-connecting-ip"), null);
   assert.equal(headers.get("x-api-key"), null);
   assert.equal(headers.get("content-length"), null);
   assert.equal(headers.get("x-tenant"), "tenant-a");
   assert.equal(headers.get("content-type"), "application/json");
+});
+
+test("forwarding does not trust a client-supplied X-Real-IP without Cloudflare client IP", () => {
+  const request = new Request("https://gateway.example/v1/responses", {
+    headers: { "x-real-ip": "198.51.100.99" },
+  });
+  const headers = forwardRequestHeaders(request, "upstream");
+  assert.equal(headers.get("x-real-ip"), null);
 });
 
 test("client API keys are selected through the asynchronous secret comparison", async () => {

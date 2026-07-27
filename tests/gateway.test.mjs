@@ -43,6 +43,51 @@ function testEnv(config) {
   };
 }
 
+async function captureLogs(run) {
+  const original = {
+    error: console.error,
+    log: console.log,
+    warn: console.warn,
+  };
+  const lines = [];
+  const entries = [];
+  for (const level of ["error", "log", "warn"]) {
+    console[level] = (...args) => {
+      const entry = args.length === 1 && typeof args[0] === "object" && args[0] !== null
+        ? args[0]
+        : JSON.parse(args.map(String).join(" "));
+      entries.push(entry);
+      lines.push(JSON.stringify(entry));
+    };
+  }
+  try {
+    const value = await run();
+    return {
+      value,
+      lines,
+      entries,
+    };
+  } finally {
+    console.error = original.error;
+    console.log = original.log;
+    console.warn = original.warn;
+  }
+}
+
+function trackedExecutionContext() {
+  const pending = [];
+  return {
+    context: {
+      waitUntil(promise) {
+        pending.push(promise);
+      },
+    },
+    async drain() {
+      await Promise.all(pending);
+    },
+  };
+}
+
 test("Worker maps the model, replaces authorization, and preserves the upstream response", async () => {
   clearConfigCacheForTests();
   const originalFetch = globalThis.fetch;
@@ -236,53 +281,92 @@ test("Image API requests reject unavailable models before contacting an upstream
 test("gateway logs correlate a request without logging credentials or body content", async () => {
   clearConfigCacheForTests();
   const originalFetch = globalThis.fetch;
-  const originalConsole = {
-    error: console.error,
-    log: console.log,
-    warn: console.warn,
-  };
-  const lines = [];
-  for (const level of ["error", "log", "warn"]) {
-    console[level] = (...args) => lines.push(args.map(String).join(" "));
-  }
   globalThis.fetch = async () => new Response("ok", { status: 200 });
 
+  let captured;
   try {
-    const response = await worker.fetch(
+    captured = await captureLogs(async () => {
+      const response = await worker.fetch(
+        new Request("https://gateway.example/v1/responses", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer client-key",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "gpt-5.6-sol",
+            input: "secret-request-body",
+          }),
+        }),
+        testEnv(gatewayConfig()),
+        {},
+      );
+      assert.equal(response.status, 200);
+      return response;
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.entries.length, 1);
+  const [entry] = captured.entries;
+  assert.equal(entry.event, "request.summary");
+  assert.equal(entry.method, "POST");
+  assert.equal(entry.path, "/v1/responses");
+  assert.equal(entry.response_status, 200);
+  assert.equal(entry.outcome, "success");
+  assert.deepEqual(entry.routing.candidate_services, ["primary"]);
+  assert.deepEqual(entry.routing.checked_available_services, ["primary"]);
+  assert.equal(entry.routing.selected_service, "primary");
+  assert.equal(entry.upstream.service_id, "primary");
+  assert.equal(entry.upstream.status, 200);
+  assert.equal(entry.upstream.attempts.length, 1);
+  assert(!captured.lines.some((line) => line.includes("client-key")));
+  assert(!captured.lines.some((line) => line.includes("secret-request-body")));
+});
+
+test("gateway summarizes configured retries in the single request log", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.services[0].retry = { status_codes: [429], delays_ms: [0, 0] };
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    return attempts < 3
+      ? Response.json({ error: { code: "rate_limit" } }, { status: 429 })
+      : new Response("ok", { status: 200 });
+  };
+
+  let captured;
+  try {
+    captured = await captureLogs(() => worker.fetch(
       new Request("https://gateway.example/v1/responses", {
         method: "POST",
         headers: {
           authorization: "Bearer client-key",
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          model: "gpt-5.6-sol",
-          input: "secret-request-body",
-        }),
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
       }),
-      testEnv(gatewayConfig()),
+      testEnv(config),
       {},
-    );
-    assert.equal(response.status, 200);
+    ));
+    assert.equal(captured.value.status, 200);
   } finally {
     globalThis.fetch = originalFetch;
-    console.error = originalConsole.error;
-    console.log = originalConsole.log;
-    console.warn = originalConsole.warn;
   }
 
-  const entries = lines.map((line) => JSON.parse(line));
-  const requestIds = new Set(
-    entries
-      .map((entry) => entry.request_id)
-      .filter((requestId) => typeof requestId === "string"),
+  assert.equal(attempts, 3);
+  assert.equal(captured.entries.length, 1);
+  assert.deepEqual(
+    captured.entries[0].upstream.attempts.map((attempt) => attempt.status),
+    [429, 429, 200],
   );
-  assert.equal(requestIds.size, 1);
-  assert(entries.some((entry) => entry.event === "request.started"));
-  assert(entries.some((entry) => entry.event === "inference.route.resolved"));
-  assert(entries.some((entry) => entry.event === "request.completed"));
-  assert(!lines.some((line) => line.includes("client-key")));
-  assert(!lines.some((line) => line.includes("secret-request-body")));
+  assert.deepEqual(
+    captured.entries[0].upstream.attempts.map((attempt) => attempt.retry_delay_ms ?? null),
+    [0, 0, null],
+  );
 });
 
 test("model endpoint switches between standard and Codex response formats", async () => {
@@ -328,6 +412,158 @@ test("model endpoint switches between standard and Codex response formats", asyn
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("model catalog fan-out is summarized in one request log", async () => {
+  clearConfigCacheForTests();
+  clearModelsCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({
+    data: [
+      { id: "grok-4.5", object: "model" },
+      { id: "review-model", object: "model" },
+    ],
+  });
+
+  let captured;
+  try {
+    captured = await captureLogs(() => worker.fetch(
+      new Request("https://gateway.example/v1/models", {
+        headers: { authorization: "Bearer client-key", "user-agent": "OpenAI-SDK" },
+      }),
+      testEnv(gatewayConfig()),
+      {},
+    ));
+    assert.equal(captured.value.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.entries.length, 1);
+  const [entry] = captured.entries;
+  assert.equal(entry.event, "request.summary");
+  assert.deepEqual(entry.routing.candidate_services, ["primary"]);
+  assert.deepEqual(entry.routing.checked_available_services, ["primary"]);
+  assert.equal(entry.catalog.cache, "miss");
+  assert.equal(Object.hasOwn(entry.catalog, "upstream_errors"), false);
+  assert.equal(Object.hasOwn(entry.catalog, "returned_model_count"), false);
+});
+
+test("partial model catalog failures remain visible at warn level", async () => {
+  clearConfigCacheForTests();
+  clearModelsCacheForTests();
+  const config = gatewayConfig();
+  config.services.push({
+    id: "secondary",
+    base_url: "https://secondary.example/v1",
+    api_key: "secondary-key",
+    disabled: false,
+    priority: 50,
+    models: ["grok-4.5"],
+  });
+  config.api_keys[0].services.push("secondary");
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    if (request.url.startsWith("https://primary.example/")) {
+      return Response.json({ error: { code: "primary_unavailable" } }, { status: 500 });
+    }
+    return Response.json({ data: [{ id: "grok-4.5", object: "model" }] });
+  };
+
+  const execution = trackedExecutionContext();
+  let captured;
+  try {
+    captured = await captureLogs(async () => {
+      const response = await worker.fetch(
+        new Request("https://gateway.example/v1/models", {
+          headers: {
+            authorization: "Bearer client-key",
+            "user-agent": "OpenAI-SDK",
+          },
+        }),
+        {
+          ...testEnv(config),
+          LOG_LEVEL: "warn",
+        },
+        execution.context,
+      );
+      assert.equal(response.status, 200);
+      await execution.drain();
+      return response;
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.entries.length, 1);
+  const [entry] = captured.entries;
+  assert.equal(entry.event, "request.summary");
+  assert.equal(entry.outcome, "partial_success");
+  assert.equal(entry.response_status, 200);
+  assert.deepEqual(entry.catalog.upstream_errors[0].error_json, {
+    error: { code: "primary_unavailable" },
+  });
+});
+
+test("model catalog logs JSON upstream errors within one request budget", async () => {
+  clearConfigCacheForTests();
+  clearModelsCacheForTests();
+  const config = gatewayConfig();
+  for (let index = 1; index < 3; index += 1) {
+    config.services.push({
+      id: `service-${index}`,
+      base_url: `https://service-${index}.example/v1`,
+      api_key: `upstream-${index}`,
+      disabled: false,
+      priority: 100 - index,
+      models: ["grok-4.5"],
+    });
+    config.api_keys[0].services.push(`service-${index}`);
+  }
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    return Response.json({
+      error: {
+        service: new URL(request.url).hostname,
+        detail: "x".repeat(20 * 1024),
+      },
+    }, { status: 500 });
+  };
+
+  const execution = trackedExecutionContext();
+  let captured;
+  try {
+    captured = await captureLogs(async () => {
+      const response = await worker.fetch(
+        new Request("https://gateway.example/v1/models", {
+          headers: { authorization: "Bearer client-key" },
+        }),
+        testEnv(config),
+        execution.context,
+      );
+      assert.equal(response.status, 502);
+      await execution.drain();
+      return response;
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.entries.length, 1);
+  const [entry] = captured.entries;
+  assert.equal(entry.catalog.upstream_errors.length, 3);
+  assert.equal(Object.hasOwn(entry.catalog.upstream_errors[0], "error_json"), true);
+  assert.equal(
+    entry.catalog.upstream_errors
+      .slice(1)
+      .every((upstream) => upstream.error_json_omitted === "request_log_budget_exceeded"),
+    true,
+  );
+  assert.equal(Object.hasOwn(entry.catalog, "returned_model_count"), false);
+  assert(JSON.stringify(entry).length < 256 * 1024);
 });
 
 test("successful model catalogs are cached for repeated equivalent requests", async () => {
@@ -450,17 +686,133 @@ test("an upstream error is returned without retrying another service", async () 
 
   const originalFetch = globalThis.fetch;
   const upstreamUrls = [];
+  const upstreamErrorBody = JSON.stringify({
+    error: {
+      message: "primary failed",
+      api_key: "upstream-key",
+    },
+  });
   globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
     upstreamUrls.push(request.url);
-    return new Response('{"error":"primary failed"}', {
+    return new Response(upstreamErrorBody, {
       status: 500,
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "x-request-id": "upstream-request-1",
+      },
     });
   };
 
+  let captured;
+  const execution = trackedExecutionContext();
   try {
-    const response = await worker.fetch(
+    captured = await captureLogs(async () => {
+      const response = await worker.fetch(
+        new Request("https://gateway.example/v1/responses", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer client-key",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+        }),
+        testEnv(config),
+        execution.context,
+      );
+      assert.equal(response.status, 500);
+      assert.equal(await response.text(), upstreamErrorBody);
+      await execution.drain();
+      return response;
+    });
+    assert.deepEqual(upstreamUrls, ["https://primary.example/v1/responses"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.entries.length, 1);
+  const [entry] = captured.entries;
+  assert.equal(entry.event, "request.summary");
+  assert.equal(entry.outcome, "upstream_error");
+  assert.equal(entry.response_status, 500);
+  assert.equal(entry.upstream.status, 500);
+  assert.equal(entry.upstream.upstream_request_id, "upstream-request-1");
+  assert.deepEqual(entry.upstream.error_json, {
+    error: {
+      message: "primary failed",
+      api_key: "[REDACTED]",
+    },
+  });
+  assert(!captured.lines.some((line) => line.includes("upstream-key")));
+});
+
+test("JSON upstream error logging does not delay returning the original response", async () => {
+  clearConfigCacheForTests();
+  const originalFetch = globalThis.fetch;
+  let bodyController;
+  globalThis.fetch = async () => new Response(
+    new ReadableStream({
+      start(controller) {
+        bodyController = controller;
+      },
+    }),
+    {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    },
+  );
+
+  const execution = trackedExecutionContext();
+  let captured;
+  try {
+    captured = await captureLogs(async () => {
+      let timer;
+      const response = await Promise.race([
+        worker.fetch(
+          new Request("https://gateway.example/v1/responses", {
+            method: "POST",
+            headers: {
+              authorization: "Bearer client-key",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+          }),
+          testEnv(gatewayConfig()),
+          execution.context,
+        ),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("response waited for log body")), 250);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      assert.equal(response.status, 500);
+      const upstreamBody = JSON.stringify({ error: { message: "delayed" } });
+      bodyController.enqueue(new TextEncoder().encode(upstreamBody));
+      bodyController.close();
+      await execution.drain();
+      assert.equal(await response.text(), upstreamBody);
+      return response;
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.entries.length, 1);
+  assert.deepEqual(captured.entries[0].upstream.error_json, {
+    error: { message: "delayed" },
+  });
+});
+
+test("non-JSON upstream errors log only the status without buffering the body", async () => {
+  clearConfigCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("temporary upstream failure", {
+    status: 502,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+
+  let captured;
+  try {
+    captured = await captureLogs(() => worker.fetch(
       new Request("https://gateway.example/v1/responses", {
         method: "POST",
         headers: {
@@ -469,15 +821,22 @@ test("an upstream error is returned without retrying another service", async () 
         },
         body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
       }),
-      testEnv(config),
+      testEnv(gatewayConfig()),
       {},
-    );
-    assert.equal(response.status, 500);
-    assert.equal(await response.text(), '{"error":"primary failed"}');
-    assert.deepEqual(upstreamUrls, ["https://primary.example/v1/responses"]);
+    ));
+    assert.equal(captured.value.status, 502);
+    assert.equal(await captured.value.text(), "temporary upstream failure");
   } finally {
     globalThis.fetch = originalFetch;
   }
+
+  assert.equal(captured.entries.length, 1);
+  const [entry] = captured.entries;
+  assert.equal(entry.upstream.status, 502);
+  assert.equal(Object.hasOwn(entry.upstream, "content_type"), false);
+  assert.equal(Object.hasOwn(entry.upstream, "upstream_request_id"), false);
+  assert.equal(Object.hasOwn(entry.upstream, "error_json"), false);
+  assert.equal(Object.hasOwn(entry.upstream, "error_body_bytes"), false);
 });
 
 test("an authenticated client can list and clear health only for allowed services", async () => {

@@ -6,15 +6,11 @@ import {
 } from "./health.ts";
 import { bearerToken, findClientApiKey, jsonResponse, openAiError } from "./http.ts";
 import {
-  elapsedMs,
   errorMessage,
   configureLogging,
-  logError,
-  logInfo,
-  logWarn,
   newRequestId,
   registerSensitiveValues,
-  requestUserAgent,
+  RequestLogContext,
 } from "./log.ts";
 import { handleModels } from "./models.ts";
 import { handleInference, type InferencePath } from "./proxy.ts";
@@ -81,15 +77,28 @@ async function handleHealthList(
   env: Env,
   client: ClientApiKeyConfig,
   incomingUrl: URL,
+  requestLog: RequestLogContext,
 ): Promise<Response> {
   const scope = healthScope(incomingUrl);
   if (!scope) {
+    requestLog.warn({
+      outcome: "invalid_health_scope",
+      health: { action: "list", scope: incomingUrl.searchParams.get("scope") },
+    });
     return invalidHealthScope();
   }
+  const data = await listCoolingServices(env, client.services, scope);
+  requestLog.set({
+    health: {
+      action: "list",
+      scope,
+      cooling_services: data.map((entry) => entry.service_id),
+    },
+  });
   return jsonResponse({
     object: "list",
     scope,
-    data: await listCoolingServices(env, client.services, scope),
+    data,
   });
 }
 
@@ -99,8 +108,13 @@ async function handleHealthClear(
   incomingUrl: URL,
   serviceId: string,
   requestId: string,
+  requestLog: RequestLogContext,
 ): Promise<Response> {
   if (!client.services.includes(serviceId)) {
+    requestLog.warn({
+      outcome: "service_not_found",
+      health: { action: "clear", service_id: serviceId },
+    });
     return openAiError(
       404,
       `Service ${serviceId} is not available for this API key`,
@@ -110,9 +124,25 @@ async function handleHealthClear(
   }
   const scope = healthScope(incomingUrl);
   if (!scope) {
+    requestLog.warn({
+      outcome: "invalid_health_scope",
+      health: {
+        action: "clear",
+        service_id: serviceId,
+        scope: incomingUrl.searchParams.get("scope"),
+      },
+    });
     return invalidHealthScope();
   }
   const snapshot = await clearServiceHealth(env, serviceId, requestId, scope);
+  requestLog.set({
+    health: {
+      action: "clear",
+      service_id: serviceId,
+      scope,
+      ...snapshot,
+    },
+  });
   return jsonResponse({
     service_id: serviceId,
     scope,
@@ -123,43 +153,21 @@ async function handleHealthClear(
 export default {
   async fetch(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
     configureLogging(env.LOG_LEVEL);
-    const startedAt = performance.now();
     const requestId = newRequestId();
     const incomingUrl = new URL(request.url);
     const matchedRoute = route(incomingUrl.pathname);
     const endpoint = matchedRoute?.endpoint;
-    logInfo("request.started", {
-      request_id: requestId,
-      method: request.method,
-      path: incomingUrl.pathname,
-      endpoint,
-      user_agent: requestUserAgent(request),
-    });
-    const finish = (response: Response): Response => {
-      logInfo("request.completed", {
-        request_id: requestId,
-        method: request.method,
-        path: incomingUrl.pathname,
-        endpoint,
-        status: response.status,
-        duration_ms: elapsedMs(startedAt),
-      });
-      return response;
-    };
+    const requestLog = new RequestLogContext(requestId, request, endpoint, context);
+    const finish = (response: Response): Response => requestLog.complete(response);
 
     if (!endpoint) {
-      logWarn("request.route.not_found", {
-        request_id: requestId,
-        path: incomingUrl.pathname,
-      });
+      requestLog.warn({ outcome: "route_not_found" });
       return finish(openAiError(404, "Not found", "invalid_request_error", "not_found"));
     }
     const allowedMethod = expectedMethod(matchedRoute);
     if (request.method !== allowedMethod) {
-      logWarn("request.method.rejected", {
-        request_id: requestId,
-        endpoint,
-        method: request.method,
+      requestLog.warn({
+        outcome: "method_rejected",
         expected_method: allowedMethod,
       });
       return finish(openAiError(405, `Only ${allowedMethod} is allowed for this endpoint`));
@@ -167,11 +175,11 @@ export default {
 
     let config;
     try {
-      config = await loadConfig(env, requestId);
+      config = await loadConfig(env, requestId, requestLog);
     } catch (error) {
       const message = error instanceof ConfigError ? error.message : "configuration is unavailable";
-      logError("request.configuration.failed", {
-        request_id: requestId,
+      requestLog.error({
+        outcome: "configuration_error",
         error: errorMessage(error),
       });
       return finish(openAiError(500, message, "server_error", "configuration_error"));
@@ -184,9 +192,9 @@ export default {
 
     const client = await findClientApiKey(request, config.api_keys);
     if (!client) {
-      logWarn("request.authentication.rejected", {
-        request_id: requestId,
-        endpoint,
+      requestLog.warn({
+        outcome: "authentication_rejected",
+        authentication: "rejected",
       });
       return finish(openAiError(401, "Invalid API key", "invalid_request_error", "invalid_api_key"));
     }
@@ -196,24 +204,24 @@ export default {
       registerSensitiveValues([clientToken]);
     }
 
-    logInfo("request.authentication.accepted", {
-      request_id: requestId,
-      endpoint,
-      allowed_service_count: client.services.length,
+    requestLog.set({
+      authentication: "accepted",
+      allowed_services: [...client.services],
     });
 
     try {
       const response = matchedRoute.endpoint === "models"
-        ? await handleModels(request, env, config, client, requestId, context)
+        ? await handleModels(request, env, config, client, requestId, context, requestLog)
         : matchedRoute.endpoint === "health"
         ? matchedRoute.action === "list"
-          ? await handleHealthList(env, client, incomingUrl)
+          ? await handleHealthList(env, client, incomingUrl, requestLog)
           : await handleHealthClear(
             env,
             client,
             incomingUrl,
             matchedRoute.serviceId,
             requestId,
+            requestLog,
           )
         : await handleInference(
           request,
@@ -223,12 +231,13 @@ export default {
           matchedRoute.endpoint,
           requestId,
           context,
+          {},
+          requestLog,
         );
       return finish(response);
     } catch (error) {
-      logError("request.handler.failed", {
-        request_id: requestId,
-        endpoint,
+      requestLog.error({
+        outcome: "gateway_error",
         error: errorMessage(error),
       });
       return finish(openAiError(500, "The gateway failed to process the request", "server_error", "gateway_error"));
