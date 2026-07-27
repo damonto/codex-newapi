@@ -46,12 +46,13 @@ function testEnv(config) {
 async function captureLogs(run) {
   const original = {
     error: console.error,
+    info: console.info,
     log: console.log,
     warn: console.warn,
   };
   const lines = [];
   const entries = [];
-  for (const level of ["error", "log", "warn"]) {
+  for (const level of ["error", "info", "log", "warn"]) {
     console[level] = (...args) => {
       const entry = args.length === 1 && typeof args[0] === "object" && args[0] !== null
         ? args[0]
@@ -69,6 +70,7 @@ async function captureLogs(run) {
     };
   } finally {
     console.error = original.error;
+    console.info = original.info;
     console.log = original.log;
     console.warn = original.warn;
   }

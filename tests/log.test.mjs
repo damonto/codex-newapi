@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   configureLogging,
   errorMessage,
+  logError,
   logInfo,
   logWarn,
   RequestLogContext,
@@ -11,11 +12,11 @@ import {
 
 test("logging honors production levels and redacts credentials", () => {
   const original = {
-    log: console.log,
+    info: console.info,
     warn: console.warn,
   };
   const entries = [];
-  console.log = (entry) => entries.push({ level: "info", entry });
+  console.info = (entry) => entries.push({ level: "info", entry });
   console.warn = (entry) => entries.push({ level: "warn", entry });
   try {
     configureLogging("warn");
@@ -25,7 +26,7 @@ test("logging honors production levels and redacts credentials", () => {
       error: errorMessage(new Error("https://example.test/?api_key=secret-value")),
     });
   } finally {
-    console.log = original.log;
+    console.info = original.info;
     console.warn = original.warn;
     configureLogging("info");
   }
@@ -38,13 +39,50 @@ test("logging honors production levels and redacts credentials", () => {
   assert(!serialized.includes('"ignored"'));
 });
 
-test("request logs emit one completion summary", () => {
+test("logging emits matching console methods and structured summary fields", () => {
   const original = {
-    log: console.log,
+    error: console.error,
+    info: console.info,
     warn: console.warn,
   };
   const entries = [];
-  console.log = (entry) => entries.push({ level: "info", entry });
+  console.info = (entry) => entries.push({ method: "info", entry });
+  console.warn = (entry) => entries.push({ method: "warn", entry });
+  console.error = (entry) => entries.push({ method: "error", entry });
+  try {
+    configureLogging("info");
+    logInfo("request.succeeded", { level: "overridden", message: "overridden" });
+    logWarn("request.delayed");
+    logError("request.failed");
+  } finally {
+    console.error = original.error;
+    console.info = original.info;
+    console.warn = original.warn;
+    configureLogging("info");
+  }
+
+  assert.deepEqual(entries.map(({ method }) => method), ["info", "warn", "error"]);
+  assert.deepEqual(
+    entries.map(({ entry }) => ({
+      event: entry.event,
+      level: entry.level,
+      message: entry.message,
+    })),
+    [
+      { event: "request.succeeded", level: "info", message: "request.succeeded" },
+      { event: "request.delayed", level: "warn", message: "request.delayed" },
+      { event: "request.failed", level: "error", message: "request.failed" },
+    ],
+  );
+});
+
+test("request logs emit one completion summary", () => {
+  const original = {
+    info: console.info,
+    warn: console.warn,
+  };
+  const entries = [];
+  console.info = (entry) => entries.push({ level: "info", entry });
   console.warn = (entry) => entries.push({ level: "warn", entry });
   try {
     configureLogging("info");
@@ -58,7 +96,7 @@ test("request logs emit one completion summary", () => {
     assert.equal(context.complete(response), response);
     assert.equal(context.complete(response), response);
   } finally {
-    console.log = original.log;
+    console.info = original.info;
     console.warn = original.warn;
     configureLogging("info");
   }
@@ -67,6 +105,8 @@ test("request logs emit one completion summary", () => {
   assert.equal(entries[0].level, "warn");
   const entry = entries[0].entry;
   assert.equal(entry.event, "request.summary");
+  assert.equal(entry.level, "warn");
+  assert.equal(entry.message, "request.summary");
   assert.equal(entry.request_id, "request-1");
   assert.equal(entry.path, "/v1/responses");
   assert.equal(entry.response_status, 429);
@@ -93,6 +133,8 @@ test("HTTP 5xx request summaries emit at error level", () => {
 
   assert.equal(entries.length, 1);
   assert.equal(entries[0].event, "request.summary");
+  assert.equal(entries[0].level, "error");
+  assert.equal(entries[0].message, "request.summary");
   assert.equal(entries[0].response_status, 500);
 });
 

@@ -101,19 +101,30 @@ function emit(level: EmittedLogLevel, event: string, fields: LogFields = {}): vo
   if (!shouldEmit(level)) {
     return;
   }
+  const message = redactText(event);
   let entry: LogFields;
   try {
-    entry = { event: redactText(event), ...sanitizeFields(fields) };
+    entry = {
+      ...sanitizeFields(fields),
+      event: message,
+      level,
+      message,
+    };
     JSON.stringify(entry);
   } catch {
-    entry = { event: redactText(event), logging_error: "fields_not_serializable" };
+    entry = {
+      event: message,
+      level,
+      message,
+      logging_error: "fields_not_serializable",
+    };
   }
   if (level === "error") {
     console.error(entry);
   } else if (level === "warn") {
     console.warn(entry);
   } else {
-    console.log(entry);
+    console.info(entry);
   }
 }
 
