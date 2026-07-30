@@ -9,7 +9,6 @@ import {
   errorMessage,
   configureLogging,
   newRequestId,
-  registerSensitiveValues,
   RequestLogContext,
 } from "./log.ts";
 import { handleModels } from "./models.ts";
@@ -159,6 +158,10 @@ export default {
     const endpoint = matchedRoute?.endpoint;
     const requestLog = new RequestLogContext(requestId, request, endpoint, context);
     const finish = (response: Response): Response => requestLog.complete(response);
+    const clientToken = bearerToken(request);
+    if (clientToken) {
+      requestLog.registerSensitiveValues([clientToken]);
+    }
 
     if (!endpoint) {
       requestLog.warn({ outcome: "route_not_found" });
@@ -185,11 +188,6 @@ export default {
       return finish(openAiError(500, message, "server_error", "configuration_error"));
     }
 
-    registerSensitiveValues([
-      ...config.services.map((service) => service.api_key),
-      ...config.api_keys.map((entry) => entry.api_key),
-    ]);
-
     const client = await findClientApiKey(request, config.api_keys);
     if (!client) {
       requestLog.warn({
@@ -199,10 +197,7 @@ export default {
       return finish(openAiError(401, "Invalid API key", "invalid_request_error", "invalid_api_key"));
     }
 
-    const clientToken = bearerToken(request);
-    if (clientToken) {
-      registerSensitiveValues([clientToken]);
-    }
+    requestLog.registerSensitiveValues([client.api_key]);
 
     requestLog.set({
       authentication: "accepted",

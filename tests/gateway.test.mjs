@@ -19,8 +19,10 @@ function gatewayConfig() {
       },
     ],
     api_keys: [{ api_key: "client-key", services: ["primary"] }],
-    model_aliases: { "gpt-5.6-sol": "grok-4.5" },
-    codex_auto_review: { service: "primary", model: "review-model" },
+    model_routes: {
+      "gpt-5.6-sol": { model: "grok-4.5" },
+      "codex-auto-review": { model: "review-model", services: ["primary"] },
+    },
   };
 }
 
@@ -141,7 +143,7 @@ test("Worker proxies Codex image generation and edits through model routing", as
   const config = gatewayConfig();
   config.services[0].models.push("gpt-image-2");
   config.services[0].retry = { status_codes: [429], delays_ms: [0] };
-  config.model_aliases["image-client"] = "gpt-image-2";
+  config.model_routes["image-client"] = { model: "gpt-image-2" };
   const originalFetch = globalThis.fetch;
   const captured = [];
   let generationAttempts = 0;
@@ -325,6 +327,75 @@ test("gateway logs correlate a request without logging credentials or body conte
   assert.equal(entry.upstream.attempts.length, 1);
   assert(!captured.lines.some((line) => line.includes("client-key")));
   assert(!captured.lines.some((line) => line.includes("secret-request-body")));
+});
+
+test("gateway logs route application independently from model rewriting", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("ok", { status: 200 });
+
+  const cases = [
+    {
+      name: "mapped route",
+      model: "gpt-5.6-sol",
+      configure: () => gatewayConfig(),
+      routeApplied: true,
+      modelRewritten: true,
+    },
+    {
+      name: "self-route with a service constraint",
+      model: "review-model",
+      configure: () => {
+        const config = gatewayConfig();
+        config.model_routes["review-model"] = {
+          model: "review-model",
+          services: ["primary"],
+        };
+        return config;
+      },
+      routeApplied: true,
+      modelRewritten: false,
+    },
+    {
+      name: "unconfigured direct model",
+      model: "review-model",
+      configure: () => gatewayConfig(),
+      routeApplied: false,
+      modelRewritten: false,
+    },
+  ];
+
+  try {
+    for (const testCase of cases) {
+      clearConfigCacheForTests();
+      const captured = await captureLogs(() => worker.fetch(
+        new Request("https://gateway.example/v1/responses", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer client-key",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ model: testCase.model, input: "hello" }),
+        }),
+        testEnv(testCase.configure()),
+        {},
+      ));
+
+      assert.equal(captured.value.status, 200, testCase.name);
+      assert.equal(captured.entries.length, 1, testCase.name);
+      assert.equal(
+        captured.entries[0].model.route_applied,
+        testCase.routeApplied,
+        testCase.name,
+      );
+      assert.equal(
+        captured.entries[0].upstream.model_rewritten,
+        testCase.modelRewritten,
+        testCase.name,
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("gateway summarizes configured retries in the single request log", async () => {
@@ -604,6 +675,68 @@ test("successful model catalogs are cached for repeated equivalent requests", as
     assert.equal(calls, 1);
     assert.deepEqual(await second.json(), await first.clone().json());
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("concurrent model catalog misses do not share request-scoped I/O", async () => {
+  clearConfigCacheForTests();
+  clearModelsCacheForTests();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  let releaseUpstream = () => {};
+  const upstreamGate = new Promise((resolve) => {
+    releaseUpstream = resolve;
+  });
+  let markTwoCalls = () => {};
+  const twoCalls = new Promise((resolve) => {
+    markTwoCalls = resolve;
+  });
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 2) {
+      markTwoCalls();
+    }
+    await upstreamGate;
+    return Response.json({
+      data: [{ id: "grok-4.5", object: "model" }],
+    });
+  };
+
+  const pending = [];
+  let timeout;
+  try {
+    const env = {
+      ...testEnv(gatewayConfig()),
+      MODELS_CACHE_TTL_SECONDS: "30",
+    };
+    for (let index = 0; index < 2; index += 1) {
+      pending.push(worker.fetch(
+        new Request("https://gateway.example/v1/models", {
+          headers: { authorization: "Bearer client-key", "user-agent": "OpenAI-SDK" },
+        }),
+        env,
+        {},
+      ));
+    }
+
+    await Promise.race([
+      twoCalls,
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("concurrent model requests shared one upstream operation")),
+          2_000,
+        );
+      }),
+    ]);
+    assert.equal(calls, 2);
+    releaseUpstream();
+    const responses = await Promise.all(pending);
+    assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+  } finally {
+    clearTimeout(timeout);
+    releaseUpstream();
+    await Promise.allSettled(pending);
     globalThis.fetch = originalFetch;
   }
 });

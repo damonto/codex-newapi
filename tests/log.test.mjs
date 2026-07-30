@@ -114,6 +114,42 @@ test("request logs emit one completion summary", () => {
   assert(!JSON.stringify(entry).includes("hidden"));
 });
 
+test("request logs keep dynamic redaction values request-scoped without truncation", () => {
+  const original = console.info;
+  const entries = [];
+  console.info = (entry) => entries.push(entry);
+  try {
+    configureLogging("info");
+    const protectedContext = new RequestLogContext(
+      "protected-request",
+      new Request("https://gateway.example/v1/responses"),
+      "responses",
+    );
+    protectedContext.registerSensitiveValues([
+      ...Array.from({ length: 300 }, (_, index) => `long-opaque-value-${index}`),
+      "xyz",
+    ]);
+    protectedContext.set({ detail: "dynamic value xyz" });
+    protectedContext.complete(new Response(null, { status: 200 }));
+
+    const independentContext = new RequestLogContext(
+      "independent-request",
+      new Request("https://gateway.example/v1/responses"),
+      "responses",
+    );
+    independentContext.set({ detail: "dynamic value xyz" });
+    independentContext.complete(new Response(null, { status: 200 }));
+  } finally {
+    console.info = original;
+    configureLogging("info");
+  }
+
+  const protectedEntry = entries.find((entry) => entry.request_id === "protected-request");
+  const independentEntry = entries.find((entry) => entry.request_id === "independent-request");
+  assert.equal(protectedEntry.detail, "dynamic value [REDACTED]");
+  assert.equal(independentEntry.detail, "dynamic value xyz");
+});
+
 test("HTTP 5xx request summaries emit at error level", () => {
   const original = console.error;
   const entries = [];

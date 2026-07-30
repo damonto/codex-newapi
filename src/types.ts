@@ -18,16 +18,15 @@ export interface ClientApiKeyConfig {
   services: string[];
 }
 
-export interface CodexAutoReviewConfig {
-  service: string;
+export interface ModelRouteConfig {
   model: string;
+  services?: string[];
 }
 
 export interface GatewayConfig {
   services: ServiceConfig[];
   api_keys: ClientApiKeyConfig[];
-  model_aliases: Record<string, string>;
-  codex_auto_review: CodexAutoReviewConfig;
+  model_routes: Record<string, ModelRouteConfig>;
 }
 
 export interface ServiceHealthSnapshot {

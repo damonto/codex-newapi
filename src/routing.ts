@@ -5,12 +5,14 @@ import {
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
+  ModelRouteConfig,
   ServiceConfig,
 } from "./types.ts";
 
 export interface ModelRoute {
   requestedModel: string;
   upstreamModel: string;
+  routeApplied: boolean;
   services: ServiceConfig[];
 }
 
@@ -25,19 +27,13 @@ export interface ServiceSelection {
 
 export function serviceSupportsModel(
   service: ServiceConfig,
-  requestedModel: string,
-  upstreamModel: string,
-  aliases: Record<string, string>,
-): boolean {
-  return (aliases[requestedModel] ?? requestedModel) === upstreamModel &&
-    service.models.includes(upstreamModel);
-}
-
-export function serviceSupportsAutoReview(
-  service: ServiceConfig,
   upstreamModel: string,
 ): boolean {
   return service.models.includes(upstreamModel);
+}
+
+function routeAllowsService(route: ModelRouteConfig | undefined, serviceId: string): boolean {
+  return route?.services === undefined || route.services.includes(serviceId);
 }
 
 function sortByPriority(services: ServiceConfig[], config: GatewayConfig): ServiceConfig[] {
@@ -56,32 +52,22 @@ export function resolveModelRoute(
   requestedModel: string,
 ): ModelRoute {
   const allowedServices = new Set(client.services);
-
-  if (requestedModel === "codex-auto-review") {
-    const service = config.services.find(
-      (entry) =>
-        entry.id === config.codex_auto_review.service &&
-        !entry.disabled &&
-        allowedServices.has(entry.id) &&
-        serviceSupportsAutoReview(entry, config.codex_auto_review.model),
-    );
-    return {
-      requestedModel,
-      upstreamModel: config.codex_auto_review.model,
-      services: service ? [service] : [],
-    };
-  }
-
-  const upstreamModel = config.model_aliases[requestedModel] ?? requestedModel;
+  const routeApplied = Object.hasOwn(config.model_routes, requestedModel);
+  const configuredRoute = routeApplied
+    ? config.model_routes[requestedModel]
+    : undefined;
+  const upstreamModel = configuredRoute?.model ?? requestedModel;
   const services = config.services.filter(
     (service) =>
       !service.disabled &&
       allowedServices.has(service.id) &&
-      serviceSupportsModel(service, requestedModel, upstreamModel, config.model_aliases),
+      routeAllowsService(configuredRoute, service.id) &&
+      serviceSupportsModel(service, upstreamModel),
   );
   return {
     requestedModel,
     upstreamModel,
+    routeApplied,
     services: sortByPriority(services, config),
   };
 }

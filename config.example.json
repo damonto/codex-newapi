@@ -36,11 +36,13 @@
       "services": ["newapi-secondary"]
     }
   ],
-  "model_aliases": {
-    "gpt-5.6-sol": "grok-4.5"
-  },
-  "codex_auto_review": {
-    "service": "newapi-primary",
-    "model": "gpt-4.1"
+  "model_routes": {
+    "gpt-5.6-sol": {
+      "model": "grok-4.5"
+    },
+    "codex-auto-review": {
+      "model": "gpt-4.1",
+      "services": ["newapi-primary"]
+    }
   }
 }

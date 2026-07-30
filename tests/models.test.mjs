@@ -23,9 +23,34 @@ const results = [
   },
 ];
 
-test("standard aggregation adds an alias without hiding the upstream model", () => {
-  const models = aggregateStandardModels(results, { "gpt-5.6-sol": "grok-4.5" });
+test("standard aggregation adds a route without hiding the upstream model", () => {
+  const models = aggregateStandardModels(results, {
+    "gpt-5.6-sol": { model: "grok-4.5" },
+  });
   assert.deepEqual(models.map((model) => model.id), ["grok-4.5", "gpt-5.6-sol"]);
+});
+
+test("standard aggregation honors route service constraints", () => {
+  const models = aggregateStandardModels(results, {
+    "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] },
+  });
+  assert.deepEqual(models.map((model) => model.id), ["grok-4.5"]);
+});
+
+test("a self-route hides a model supplied only by disallowed services", () => {
+  const routes = {
+    "grok-4.5": { model: "grok-4.5", services: ["secondary"] },
+  };
+  assert.deepEqual(aggregateStandardModels(results, routes), []);
+
+  const secondaryResults = [{
+    ...results[0],
+    service: { id: "secondary", models: ["grok-4.5"] },
+  }];
+  assert.deepEqual(
+    aggregateStandardModels(secondaryResults, routes).map((model) => model.id),
+    ["grok-4.5"],
+  );
 });
 
 test("Codex aggregation only returns exact catalog matches", () => {
@@ -48,8 +73,9 @@ function modelConfig(serviceCount = 1) {
   return {
     services,
     api_keys: [{ api_key: "client", services: services.map((service) => service.id) }],
-    model_aliases: {},
-    codex_auto_review: { service: services[0].id, model: "model" },
+    model_routes: {
+      "codex-auto-review": { model: "model", services: [services[0].id] },
+    },
   };
 }
 

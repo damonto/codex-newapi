@@ -8,7 +8,7 @@ Use several NewAPI services through one Cloudflare Workers endpoint. It works wi
 
 - Combines multiple NewAPI services behind one address.
 - Routes models by priority and controls access with client API keys.
-- Supports model aliases and Codex auto review.
+- Supports client-facing model routes with optional service constraints.
 - Supports Codex Image Gen through configured `gpt-image-2` services.
 - Can retry selected status codes with a separate policy for each service.
 
@@ -66,23 +66,26 @@ npm run deploy
       "services": ["primary"]
     }
   ],
-  "model_aliases": {
-    "gpt-5.6-sol": "grok-4.5"
-  },
-  "codex_auto_review": {
-    "service": "primary",
-    "model": "grok-4.5"
+  "model_routes": {
+    "gpt-5.6-sol": {
+      "model": "grok-4.5"
+    },
+    "codex-auto-review": {
+      "model": "grok-4.5",
+      "services": ["primary"]
+    }
   }
 }
 ```
 
 - `services`: upstream services and the models they provide. Higher priority wins.
 - `api_keys`: keys used by your clients and the services each key may access.
-- `model_aliases`: optional client-facing names for upstream models.
-- `codex_auto_review`: service and model used by Codex auto review.
+- `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services.
 - `retry`: optional status codes and delays. Each delay adds one retry; omitting this field disables retries.
 
-To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through `model_aliases`.
+When a route omits `services`, all client-authorized services that list its upstream model are eligible. When `services` is present, it is intersected with the client API key's allowed services. Unconfigured model names are forwarded directly.
+
+To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through `model_routes`.
 
 After changing `config.json`, upload it again. A Worker redeploy is not required:
 

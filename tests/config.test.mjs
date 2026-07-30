@@ -16,8 +16,10 @@ function validConfig() {
       },
     ],
     api_keys: [{ api_key: "client-key", services: ["primary"] }],
-    model_aliases: { "gpt-5.6-sol": "grok-4.5" },
-    codex_auto_review: { service: "primary", model: "review-model" },
+    model_routes: {
+      "gpt-5.6-sol": { model: "grok-4.5" },
+      "codex-auto-review": { model: "review-model", services: ["primary"] },
+    },
   };
 }
 
@@ -27,16 +29,20 @@ test("parseConfig normalizes and validates a complete configuration", () => {
   assert.equal(config.services[0].disabled, false);
   assert.equal(config.services[0].retry, undefined);
   assert.equal(Object.hasOwn(config.services[0], "retry"), false);
-  assert.equal(config.model_aliases["gpt-5.6-sol"], "grok-4.5");
+  assert.deepEqual(config.model_routes["gpt-5.6-sol"], { model: "grok-4.5" });
+  assert.deepEqual(config.model_routes["codex-auto-review"], {
+    model: "review-model",
+    services: ["primary"],
+  });
 });
 
 test("parseConfig allows codex-auto-review as the configured upstream model", () => {
   const input = validConfig();
   input.services[0].models = ["grok-4.5", "codex-auto-review"];
-  input.codex_auto_review.model = "codex-auto-review";
+  input.model_routes["codex-auto-review"].model = "codex-auto-review";
 
   const config = parseConfig(input);
-  assert.equal(config.codex_auto_review.model, "codex-auto-review");
+  assert.equal(config.model_routes["codex-auto-review"].model, "codex-auto-review");
 });
 
 test("parseConfig enables retries only when a service configures them", () => {
@@ -109,29 +115,95 @@ test("parseConfig rejects a non-boolean disabled value", () => {
   );
 });
 
-test("parseConfig treats the optional model_aliases field as an empty mapping", () => {
+test("parseConfig treats the optional model_routes field as an empty mapping", () => {
   const input = validConfig();
-  delete input.model_aliases;
+  delete input.model_routes;
   const config = parseConfig(input);
-  assert.deepEqual(config.model_aliases, {});
+  assert.deepEqual(config.model_routes, {});
 });
 
-test("parseConfig rejects aliases that no service can run", () => {
+test("parseConfig rejects the removed legacy routing fields", () => {
+  const aliases = validConfig();
+  aliases.model_aliases = { "gpt-5.6-sol": "grok-4.5" };
+  assert.throws(
+    () => parseConfig(aliases),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message === "configuration.model_aliases is not supported",
+  );
+
+  const autoReview = validConfig();
+  autoReview.codex_auto_review = { service: "primary", model: "review-model" };
+  assert.throws(
+    () => parseConfig(autoReview),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message === "configuration.codex_auto_review is not supported",
+  );
+});
+
+test("parseConfig rejects routes that no service can run", () => {
   const input = validConfig();
-  input.model_aliases["gpt-5.6-sol"] = "missing-model";
-  assert.throws(() => parseConfig(input), ConfigError);
+  input.model_routes["gpt-5.6-sol"].model = "missing-model";
+  assert.throws(
+    () => parseConfig(input),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message ===
+        "model_routes.gpt-5.6-sol.model targets missing-model, which no service supports",
+  );
 });
 
-test("parseConfig rejects a service list written with only the client alias", () => {
+test("parseConfig requires services to list the real route target", () => {
   const input = validConfig();
   input.services[0].models = ["gpt-5.6-sol", "review-model"];
   assert.throws(() => parseConfig(input), ConfigError);
 });
 
-test("parseConfig rejects an alias even when its real target is also listed", () => {
+test("parseConfig allows a route to constrain a real model name", () => {
   const input = validConfig();
-  input.services[0].models = ["gpt-5.6-sol", "grok-4.5", "review-model"];
-  assert.throws(() => parseConfig(input), ConfigError);
+  input.model_routes = {
+    "grok-4.5": { model: "grok-4.5", services: ["primary"] },
+  };
+  assert.doesNotThrow(() => parseConfig(input));
+});
+
+test("parseConfig rejects unknown or incompatible route services", () => {
+  const unknown = validConfig();
+  unknown.model_routes["gpt-5.6-sol"].services = ["missing"];
+  assert.throws(
+    () => parseConfig(unknown),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message ===
+        "model_routes.gpt-5.6-sol.services references unknown service missing",
+  );
+
+  const unsupported = validConfig();
+  unsupported.services.push({
+    id: "secondary",
+    base_url: "https://secondary.example/v1",
+    api_key: "secondary-key",
+    disabled: false,
+    priority: 50,
+    models: ["review-model"],
+  });
+  unsupported.model_routes["gpt-5.6-sol"].services = ["secondary"];
+  assert.throws(
+    () => parseConfig(unsupported),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message ===
+        "model_routes.gpt-5.6-sol.model grok-4.5 is not listed by service secondary",
+  );
+});
+
+test("parseConfig rejects empty or duplicate route service constraints", () => {
+  for (const services of [[], ["primary", "primary"]]) {
+    const input = validConfig();
+    input.model_routes["gpt-5.6-sol"].services = services;
+    assert.throws(() => parseConfig(input), ConfigError);
+  }
 });
 
 test("parseConfig rejects API keys that reference unknown services", () => {
@@ -158,8 +230,8 @@ test("parseConfig rejects fields that are not declared by the schema", () => {
     ["api_keys[0].extra is not supported", (input) => {
       input.api_keys[0].extra = true;
     }],
-    ["codex_auto_review.extra is not supported", (input) => {
-      input.codex_auto_review.extra = true;
+    ["model_routes.gpt-5.6-sol.extra is not supported", (input) => {
+      input.model_routes["gpt-5.6-sol"].extra = true;
     }],
   ];
 

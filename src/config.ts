@@ -1,7 +1,7 @@
 import type {
   ClientApiKeyConfig,
-  CodexAutoReviewConfig,
   GatewayConfig,
+  ModelRouteConfig,
   ServiceConfig,
   ServiceRetryConfig,
 } from "./types.ts";
@@ -16,8 +16,7 @@ const ROOT_FIELDS = new Set([
   "$schema",
   "services",
   "api_keys",
-  "model_aliases",
-  "codex_auto_review",
+  "model_routes",
 ]);
 const SERVICE_FIELDS = new Set([
   "id",
@@ -29,7 +28,7 @@ const SERVICE_FIELDS = new Set([
   "retry",
 ]);
 const API_KEY_FIELDS = new Set(["api_key", "services"]);
-const AUTO_REVIEW_FIELDS = new Set(["service", "model"]);
+const MODEL_ROUTE_FIELDS = new Set(["model", "services"]);
 const RETRY_FIELDS = new Set(["status_codes", "delays_ms"]);
 
 export class ConfigError extends Error {
@@ -198,37 +197,38 @@ function parseApiKey(value: unknown, index: number): ClientApiKeyConfig {
   };
 }
 
-function parseAliases(value: unknown): Record<string, string> {
+function parseModelRoutes(value: unknown): Record<string, ModelRouteConfig> {
   if (value === undefined) {
     return {};
   }
   if (!isRecord(value)) {
-    throw new ConfigError("model_aliases must be an object");
+    throw new ConfigError("model_routes must be an object");
   }
-  const aliases: Record<string, string> = {};
-  for (const [clientModel, upstreamModel] of Object.entries(value)) {
-    const client = requiredString(clientModel, "model_aliases key");
-    const upstream = requiredString(upstreamModel, `model_aliases.${client}`);
-    if (client === "codex-auto-review") {
-      throw new ConfigError("model_aliases must not override codex-auto-review");
+  const routes: Array<[string, ModelRouteConfig]> = [];
+  const clientModels = new Set<string>();
+  for (const [rawClientModel, rawRoute] of Object.entries(value)) {
+    const clientModel = requiredString(rawClientModel, "model_routes key");
+    const path = `model_routes.${clientModel}`;
+    if (clientModels.has(clientModel)) {
+      throw new ConfigError(`model_routes contains duplicate normalized model ${clientModel}`);
     }
-    if (client === upstream) {
-      throw new ConfigError(`model_aliases.${client} must map to a different model`);
+    clientModels.add(clientModel);
+    if (!isRecord(rawRoute)) {
+      throw new ConfigError(`${path} must be an object`);
     }
-    aliases[client] = upstream;
+    rejectUnknownFields(rawRoute, MODEL_ROUTE_FIELDS, path);
+    const services = rawRoute.services === undefined
+      ? undefined
+      : stringArray(rawRoute.services, `${path}.services`);
+    routes.push([
+      clientModel,
+      {
+        model: requiredString(rawRoute.model, `${path}.model`),
+        ...(services === undefined ? {} : { services }),
+      },
+    ]);
   }
-  return aliases;
-}
-
-function parseAutoReview(value: unknown): CodexAutoReviewConfig {
-  if (!isRecord(value)) {
-    throw new ConfigError("codex_auto_review must be an object");
-  }
-  rejectUnknownFields(value, AUTO_REVIEW_FIELDS, "codex_auto_review");
-  return {
-    service: requiredString(value.service, "codex_auto_review.service"),
-    model: requiredString(value.model, "codex_auto_review.model"),
-  };
+  return Object.fromEntries(routes);
 }
 
 export function parseConfig(value: unknown): GatewayConfig {
@@ -264,44 +264,34 @@ export function parseConfig(value: unknown): GatewayConfig {
     }
   }
 
-  const modelAliases = parseAliases(value.model_aliases);
-  for (const service of services) {
-    for (const model of service.models) {
-      if (Object.hasOwn(modelAliases, model)) {
+  const modelRoutes = parseModelRoutes(value.model_routes);
+  const knownUpstreamModels = new Set(services.flatMap((service) => service.models));
+  const servicesById = new Map(services.map((service) => [service.id, service]));
+  for (const [clientModel, route] of Object.entries(modelRoutes)) {
+    if (!knownUpstreamModels.has(route.model)) {
+      throw new ConfigError(
+        `model_routes.${clientModel}.model targets ${route.model}, which no service supports`,
+      );
+    }
+    for (const serviceId of route.services ?? []) {
+      const service = servicesById.get(serviceId);
+      if (!service) {
         throw new ConfigError(
-          `services.${service.id}.models must contain upstream names, not alias ${model}`,
+          `model_routes.${clientModel}.services references unknown service ${serviceId}`,
+        );
+      }
+      if (!service.models.includes(route.model)) {
+        throw new ConfigError(
+          `model_routes.${clientModel}.model ${route.model} is not listed by service ${serviceId}`,
         );
       }
     }
-  }
-  const knownUpstreamModels = new Set(services.flatMap((service) => service.models));
-  for (const [clientModel, upstreamModel] of Object.entries(modelAliases)) {
-    if (Object.hasOwn(modelAliases, upstreamModel)) {
-      throw new ConfigError(`model_aliases.${clientModel} must not target another alias`);
-    }
-    if (!knownUpstreamModels.has(upstreamModel)) {
-      throw new ConfigError(
-        `model_aliases.${clientModel} targets ${upstreamModel}, which no service supports`,
-      );
-    }
-  }
-
-  const codexAutoReview = parseAutoReview(value.codex_auto_review);
-  const autoReviewService = services.find((service) => service.id === codexAutoReview.service);
-  if (!autoReviewService) {
-    throw new ConfigError(`codex_auto_review.service references unknown service ${codexAutoReview.service}`);
-  }
-  if (!autoReviewService.models.includes(codexAutoReview.model)) {
-    throw new ConfigError(
-      `codex_auto_review.model ${codexAutoReview.model} is not listed by its service`,
-    );
   }
 
   return {
     services,
     api_keys: apiKeys,
-    model_aliases: modelAliases,
-    codex_auto_review: codexAutoReview,
+    model_routes: modelRoutes,
   };
 }
 

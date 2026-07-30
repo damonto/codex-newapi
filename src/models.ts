@@ -19,20 +19,17 @@ import {
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "./health.ts";
-import {
-  allowedServices,
-  serviceSupportsAutoReview,
-} from "./routing.ts";
+import { allowedServices } from "./routing.ts";
 import {
   elapsedMs,
   errorMessage,
-  registerSensitiveValues,
   type LogFields,
   type RequestLogContext,
 } from "./log.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
+  ModelRouteConfig,
   ServiceConfig,
 } from "./types.ts";
 import {
@@ -84,8 +81,7 @@ class ModelsRequestError extends Error {
   }
 }
 
-let modelsCache = new Map<string, ModelsCacheEntry>();
-let modelsInFlight = new Map<string, Promise<ModelsCollectionResult>>();
+const modelsCache = new Map<string, ModelsCacheEntry>();
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -172,7 +168,6 @@ async function fetchCatalogResponse(
 async function fetchServiceModels(
   request: Request,
   env: Env,
-  config: GatewayConfig,
   service: ServiceConfig,
   requestId: string,
   context?: HealthExecutionContext,
@@ -233,12 +228,7 @@ async function fetchServiceModels(
       );
       return { service, success: false, models: [], upstream };
     }
-    const filteredModels = models.filter((model) => {
-      if (model.id === config.codex_auto_review.model) {
-        return serviceSupportsAutoReview(service, model.id);
-      }
-      return service.models.includes(model.id);
-    });
+    const filteredModels = models.filter((model) => service.models.includes(model.id));
     await scheduleHealthUpdate(
       context,
       recordServiceSuccess(env, service.id, requestId, "catalog"),
@@ -274,11 +264,17 @@ function standardModel(raw: JsonObject, id: string): JsonObject {
 function exposedClientModels(
   service: ServiceConfig,
   upstreamModel: string,
-  aliases: Record<string, string>,
+  routes: Record<string, ModelRouteConfig>,
 ): string[] {
-  const ids = service.models.includes(upstreamModel) ? [upstreamModel] : [];
-  for (const [clientModel, target] of Object.entries(aliases)) {
-    if (target === upstreamModel && service.models.includes(upstreamModel)) {
+  if (!service.models.includes(upstreamModel)) {
+    return [];
+  }
+  const ids = Object.hasOwn(routes, upstreamModel) ? [] : [upstreamModel];
+  for (const [clientModel, route] of Object.entries(routes)) {
+    if (
+      route.model === upstreamModel &&
+      (route.services === undefined || route.services.includes(service.id))
+    ) {
       ids.push(clientModel);
     }
   }
@@ -287,7 +283,7 @@ function exposedClientModels(
 
 export function aggregateStandardModels(
   results: ServiceModelsResult[],
-  aliases: Record<string, string>,
+  routes: Record<string, ModelRouteConfig>,
 ): JsonObject[] {
   const merged = new Map<string, JsonObject>();
 
@@ -296,7 +292,7 @@ export function aggregateStandardModels(
       continue;
     }
     for (const model of result.models) {
-      const clientModels = exposedClientModels(result.service, model.id, aliases);
+      const clientModels = exposedClientModels(result.service, model.id, routes);
       for (const clientModel of clientModels) {
         if (clientModel === "codex-auto-review") {
           continue;
@@ -313,25 +309,22 @@ export function aggregateStandardModels(
 function codexModelIds(
   standardModels: JsonObject[],
   results: ServiceModelsResult[],
-  config: GatewayConfig,
+  routes: Record<string, ModelRouteConfig>,
 ): Set<string> {
   const ids = new Set(
     standardModels
       .map((model) => model.id)
       .filter((id): id is string => typeof id === "string"),
   );
-  const reviewAvailable = results.some(
-    (result) =>
-      result.success &&
-      result.service.id === config.codex_auto_review.service &&
-      result.models.some(
-        (model) =>
-          model.id === config.codex_auto_review.model &&
-          serviceSupportsAutoReview(result.service, model.id),
-      ),
-  );
-  if (reviewAvailable) {
-    ids.add("codex-auto-review");
+  for (const result of results) {
+    if (!result.success) {
+      continue;
+    }
+    for (const model of result.models) {
+      for (const clientModel of exposedClientModels(result.service, model.id, routes)) {
+        ids.add(clientModel);
+      }
+    }
   }
   return ids;
 }
@@ -448,7 +441,6 @@ function writeModelsCache(key: string, payload: JsonObject, ttlMs: number): void
 
 export function clearModelsCacheForTests(): void {
   modelsCache.clear();
-  modelsInFlight.clear();
 }
 
 async function collectModels(
@@ -501,7 +493,6 @@ async function collectModels(
     (service) => fetchServiceModels(
       request,
       env,
-      config,
       service,
       requestId,
       context,
@@ -537,10 +528,14 @@ async function collectModels(
     );
   }
 
-  const standardModels = aggregateStandardModels(results, config.model_aliases);
+  const standardModels = aggregateStandardModels(results, config.model_routes);
   const payload = !codexFormat
     ? { object: "list", data: standardModels }
-    : { models: aggregateCodexModels(codexModelIds(standardModels, results, config)) };
+    : {
+      models: aggregateCodexModels(
+        codexModelIds(standardModels, results, config.model_routes),
+      ),
+    };
   return {
     payload,
     partialSuccess: upstreamErrors.length > 0,
@@ -557,7 +552,7 @@ export async function handleModels(
   requestLog?: RequestLogContext,
 ): Promise<Response> {
   const configuredServices = allowedServices(config, client);
-  registerSensitiveValues([
+  requestLog?.registerSensitiveValues([
     ...configuredServices.map((service) => service.api_key),
     client.api_key,
   ]);
@@ -580,10 +575,10 @@ export async function handleModels(
     return jsonResponse(cachedPayload);
   }
 
-  let collection = modelsInFlight.get(cacheKey);
-  if (!collection) {
-    requestLog?.mergeSection("catalog", { cache: "miss" });
-    collection = collectModels(
+  requestLog?.mergeSection("catalog", { cache: "miss" });
+
+  try {
+    const result = await collectModels(
       request,
       env,
       config,
@@ -593,13 +588,6 @@ export async function handleModels(
       context,
       requestLog,
     );
-    modelsInFlight.set(cacheKey, collection);
-  } else {
-    requestLog?.mergeSection("catalog", { cache: "in_flight" });
-  }
-
-  try {
-    const result = await collection;
     if (result.partialSuccess) {
       requestLog?.warn({ outcome: "partial_success" });
     }
@@ -614,9 +602,5 @@ export async function handleModels(
       return openAiError(error.status, error.messageText, error.type, error.code);
     }
     throw error;
-  } finally {
-    if (modelsInFlight.get(cacheKey) === collection) {
-      modelsInFlight.delete(cacheKey);
-    }
   }
 }

@@ -19,7 +19,6 @@ import {
   bounded,
   elapsedMs,
   errorMessage,
-  registerSensitiveValues,
   type RequestLogContext,
 } from "./log.ts";
 import {
@@ -49,7 +48,8 @@ export type InferencePath =
   | "images/generations"
   | "images/edits";
 
-export const MAX_INFERENCE_BODY_BYTES = 64 * 1024 * 1024;
+const MAX_INFERENCE_BODY_MIB = 96;
+export const MAX_INFERENCE_BODY_BYTES = MAX_INFERENCE_BODY_MIB * 1024 * 1024;
 
 interface InferenceRetryOptions {
   wait?: (delayMs: number) => Promise<void>;
@@ -157,6 +157,7 @@ export async function handleInference(
   retryOptions: InferenceRetryOptions = {},
   requestLog?: RequestLogContext,
 ): Promise<Response> {
+  requestLog?.registerSensitiveValues([client.api_key]);
   let rawBody: Uint8Array<ArrayBuffer>;
   try {
     rawBody = await readBodyWithinLimit(
@@ -172,7 +173,7 @@ export async function handleInference(
       });
       return openAiError(
         413,
-        "Request body exceeds the 64 MiB limit",
+        `Request body exceeds the ${MAX_INFERENCE_BODY_MIB} MiB limit`,
         "invalid_request_error",
         "request_too_large",
       );
@@ -198,7 +199,7 @@ export async function handleInference(
     model: {
       requested: bounded(payload.model, 160),
       upstream: bounded(route.upstreamModel, 160),
-      alias_applied: payload.model !== route.upstreamModel,
+      route_applied: route.routeApplied,
     },
     routing: { candidate_services: candidateServices },
   });
@@ -226,7 +227,7 @@ export async function handleInference(
     return openAiError(503, `No healthy service is currently available for model ${payload.model}`, "server_error", "service_cooling_down");
   }
 
-  registerSensitiveValues([service.api_key]);
+  requestLog?.registerSensitiveValues([service.api_key]);
   const headers = forwardRequestHeaders(request, service.api_key);
   headers.delete("content-length");
   const modelRewritten = payload.model !== route.upstreamModel;

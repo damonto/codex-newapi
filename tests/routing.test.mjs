@@ -21,24 +21,59 @@ const config = parseConfig({
       api_key: "one",
       disabled: false,
       priority: 100,
-      models: ["grok-4.5"],
+      models: ["grok-4.5", "review-model"],
     },
   ],
   api_keys: [{ api_key: "client", services: ["secondary", "primary"] }],
-  model_aliases: { "gpt-5.6-sol": "grok-4.5" },
-  codex_auto_review: { service: "secondary", model: "review-model" },
+  model_routes: {
+    "gpt-5.6-sol": { model: "grok-4.5" },
+    "codex-auto-review": { model: "review-model", services: ["secondary"] },
+  },
 });
 const client = config.api_keys[0];
 
-test("normal aliases resolve globally and services remain priority ordered", () => {
+test("unconstrained routes resolve globally and services remain priority ordered", () => {
   const route = resolveModelRoute(config, client, "gpt-5.6-sol");
   assert.equal(route.upstreamModel, "grok-4.5");
+  assert.equal(route.routeApplied, true);
   assert.deepEqual(route.services.map((service) => service.id), ["primary", "secondary"]);
 });
 
-test("codex-auto-review is pinned to its configured service", () => {
+test("an unconfigured upstream model is not marked as a route", () => {
+  const route = resolveModelRoute(config, client, "review-model");
+  assert.equal(route.upstreamModel, "review-model");
+  assert.equal(route.routeApplied, false);
+});
+
+test("route service constraints override global service priority", () => {
   const route = resolveModelRoute(config, client, "codex-auto-review");
   assert.equal(route.upstreamModel, "review-model");
+  assert.deepEqual(route.services.map((service) => service.id), ["secondary"]);
+});
+
+test("route service constraints are intersected with client service access", () => {
+  const route = resolveModelRoute(
+    config,
+    { api_key: "limited", services: ["primary"] },
+    "codex-auto-review",
+  );
+  assert.deepEqual(route.services, []);
+});
+
+test("a route can constrain a real upstream model name", () => {
+  const route = resolveModelRoute(
+    {
+      ...config,
+      model_routes: {
+        ...config.model_routes,
+        "grok-4.5": { model: "grok-4.5", services: ["secondary"] },
+      },
+    },
+    client,
+    "grok-4.5",
+  );
+  assert.equal(route.upstreamModel, "grok-4.5");
+  assert.equal(route.routeApplied, true);
   assert.deepEqual(route.services.map((service) => service.id), ["secondary"]);
 });
 
@@ -71,7 +106,7 @@ test("disabled services are excluded before priority and health selection", asyn
   assert.equal(healthChecks, 1);
 });
 
-test("a disabled codex-auto-review service is unavailable", () => {
+test("a disabled route-constrained service is unavailable", () => {
   const disabledConfig = {
     ...config,
     services: config.services.map((service) => ({
@@ -103,7 +138,7 @@ test("a cooling primary service is skipped for the next priority", async () => {
   assert.equal(selected.id, "secondary");
 });
 
-test("a model alias requires the real upstream model in the service list", () => {
+test("a model route requires the real upstream model in the service list", () => {
   assert.throws(
     () =>
       parseConfig({
@@ -118,8 +153,13 @@ test("a model alias requires the real upstream model in the service list", () =>
           },
         ],
         api_keys: [{ api_key: "alias-client", services: ["alias-only"] }],
-        model_aliases: { "gpt-5.6-sol": "grok-4.5" },
-        codex_auto_review: { service: "alias-only", model: "review-model" },
+        model_routes: {
+          "gpt-5.6-sol": { model: "grok-4.5" },
+          "codex-auto-review": {
+            model: "review-model",
+            services: ["alias-only"],
+          },
+        },
       }),
   );
 });

@@ -15,15 +15,15 @@ This repository contains a TypeScript Cloudflare Worker that aggregates multiple
 ## Configuration invariants
 
 - `services[].models` contains only real upstream model names.
-- `model_aliases` is optional. Its values must be real upstream model names supported by at least one service.
-- `codex_auto_review` is separate from `model_aliases` and pins `codex-auto-review` to one configured service and real model.
+- `model_routes` is optional. Each route maps a client-facing model name to a real upstream `model` supported by at least one service.
+- `model_routes.*.services` is optional. When present, every referenced service must exist and list the route's upstream model; routing intersects this list with the authenticated client API key's allowed services.
 - `services[].retry` is optional and enables retries only when explicitly configured. Its `status_codes` and `delays_ms` arrays must both be empty or both be non-empty; the number of delays is the retry count.
 - Client API keys may only reference declared services.
 - Keep the JSON schema, `config.example.json`, parser validation, and tests consistent when changing configuration.
 
 ## Request and routing behavior
 
-- Preserve request bodies, query strings, headers, and upstream responses whenever possible. Only replace the gateway Authorization header, rewrite a model field when an alias is configured, and remove headers that become invalid after rewriting.
+- Preserve request bodies, query strings, headers, and upstream responses whenever possible. Only replace the gateway Authorization header, rewrite a model field when a route is configured, and remove headers that become invalid after rewriting.
 - Select services by descending priority, then configuration order, while skipping services in cooldown.
 - Apply only the selected service's configured retry policy. Retries resend the same request to that service; they never switch services, and the final upstream response is returned unchanged.
 - Do not add retries beyond the configured policy or fallback to another service after an upstream request has started unless the user explicitly requests that behavior.

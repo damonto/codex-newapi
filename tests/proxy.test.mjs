@@ -25,8 +25,7 @@ function inferenceFixture(retry) {
     config: {
       services: [service],
       api_keys: [{ api_key: "client", services: [service.id] }],
-      model_aliases: {},
-      codex_auto_review: { service: service.id, model: "model" },
+      model_routes: {},
     },
     env: {
       HEALTH: {
@@ -68,7 +67,7 @@ test("mapping changes only the model value semantically", () => {
 test("Responses bodies remain unchanged when image generation is routable", async () => {
   const fixture = inferenceFixture();
   fixture.config.services[0].models.push("upstream-image-model");
-  fixture.config.model_aliases["gpt-image-2"] = "upstream-image-model";
+  fixture.config.model_routes["gpt-image-2"] = { model: "upstream-image-model" };
   const originalBody = '{\n  "model": "model",\n  "input": "draw",\n  "tools": []\n}\n';
   const originalFetch = globalThis.fetch;
   let captured;
@@ -143,11 +142,11 @@ test("Image API requests preserve the original JSON body when the model is uncha
   }
 });
 
-test("Image API requests route gpt-image-2 through its model alias", async () => {
+test("Image API requests route gpt-image-2 through its model route", async () => {
   const originalFetch = globalThis.fetch;
   const fixture = inferenceFixture();
   fixture.config.services[0].models = ["upstream-image-model"];
-  fixture.config.model_aliases = { "gpt-image-2": "upstream-image-model" };
+  fixture.config.model_routes = { "gpt-image-2": { model: "upstream-image-model" } };
   let capturedBody;
   globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -177,11 +176,10 @@ test("Image API requests route gpt-image-2 through its model alias", async () =>
   }
 });
 
-test("model aliases rewrite only the model and invalidate body digests", async () => {
+test("model routes rewrite only the model and invalidate body digests", async () => {
   const fixture = inferenceFixture();
   fixture.config.services[0].models = ["upstream-model"];
-  fixture.config.model_aliases = { "client-model": "upstream-model" };
-  fixture.config.codex_auto_review.model = "upstream-model";
+  fixture.config.model_routes = { "client-model": { model: "upstream-model" } };
   const originalFetch = globalThis.fetch;
   let captured;
   globalThis.fetch = async (input, init) => {

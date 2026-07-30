@@ -53,7 +53,8 @@ test("bounded body reading rejects declared oversize bodies before consuming the
   assert.equal(cancelled, true);
 });
 
-test("inference requests larger than 64 MiB return an OpenAI-compatible 413", async () => {
+test("inference requests larger than 96 MiB return an OpenAI-compatible 413", async () => {
+  assert.equal(MAX_INFERENCE_BODY_BYTES, 96 * 1024 * 1024);
   const request = new Request("https://gateway.example/v1/responses", {
     method: "POST",
     headers: {
@@ -68,8 +69,7 @@ test("inference requests larger than 64 MiB return an OpenAI-compatible 413", as
     {
       services: [],
       api_keys: [],
-      model_aliases: {},
-      codex_auto_review: { service: "unused", model: "unused" },
+      model_routes: {},
     },
     { api_key: "client", services: [] },
     "responses",

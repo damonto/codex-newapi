@@ -21,7 +21,6 @@ const ASSIGNMENT_SECRET_PATTERN = /((?:["']?(?:api[-_]?key|token|access[-_]?toke
 const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9._-]{7,}\b/g;
 
 let currentLogLevel: LogLevel = "info";
-let sensitiveValues: string[] = [];
 
 export function configureLogging(value: unknown): LogLevel {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -37,17 +36,16 @@ export function getLogLevel(): LogLevel {
   return currentLogLevel;
 }
 
-export function registerSensitiveValues(values: Iterable<unknown>): void {
-  sensitiveValues = [...new Set(
-    [...sensitiveValues, ...values]
-      .filter((value): value is string => typeof value === "string" && value.length >= 3)
-      .map((value) => value.slice(0, 4096)),
-  )]
-    .sort((left, right) => right.length - left.length)
-    .slice(0, 256);
+function normalizedSensitiveValues(values: Iterable<unknown>): string[] {
+  return [...values]
+    .filter((value): value is string => typeof value === "string" && value.length >= 3)
+    .map((value) => value.slice(0, 4096));
 }
 
-export function redactText(value: string): string {
+function redactTextWithSensitiveValues(
+  value: string,
+  sensitiveValues: readonly string[],
+): string {
   let redacted = value
     .replace(BEARER_PATTERN, `$1 ${REDACTED}`)
     .replace(QUERY_SECRET_PATTERN, `$1${REDACTED}`)
@@ -59,12 +57,21 @@ export function redactText(value: string): string {
   return redacted;
 }
 
-function sanitizeValue(value: unknown, key: string | undefined, seen: WeakSet<object>): unknown {
+export function redactText(value: string): string {
+  return redactTextWithSensitiveValues(value, []);
+}
+
+function sanitizeValue(
+  value: unknown,
+  key: string | undefined,
+  seen: WeakSet<object>,
+  sensitiveValues: readonly string[],
+): unknown {
   if (key && SENSITIVE_FIELD.test(key)) {
     return REDACTED;
   }
   if (typeof value === "string") {
-    return redactText(value);
+    return redactTextWithSensitiveValues(value, sensitiveValues);
   }
   if (value === null || typeof value !== "object") {
     return value;
@@ -74,20 +81,27 @@ function sanitizeValue(value: unknown, key: string | undefined, seen: WeakSet<ob
   }
   seen.add(value);
   if (Array.isArray(value)) {
-    const sanitized = value.map((entry) => sanitizeValue(entry, undefined, seen));
+    const sanitized = value.map((entry) =>
+      sanitizeValue(entry, undefined, seen, sensitiveValues)
+    );
     seen.delete(value);
     return sanitized;
   }
   const sanitized: Record<string, unknown> = {};
   for (const [entryKey, entryValue] of Object.entries(value)) {
-    sanitized[entryKey] = sanitizeValue(entryValue, entryKey, seen);
+    sanitized[entryKey] = sanitizeValue(entryValue, entryKey, seen, sensitiveValues);
   }
   seen.delete(value);
   return sanitized;
 }
 
-function sanitizeFields(fields: LogFields): LogFields {
-  return sanitizeValue(fields, undefined, new WeakSet<object>()) as LogFields;
+function sanitizeFields(fields: LogFields, sensitiveValues: readonly string[]): LogFields {
+  return sanitizeValue(
+    fields,
+    undefined,
+    new WeakSet<object>(),
+    sensitiveValues,
+  ) as LogFields;
 }
 
 function shouldEmit(level: EmittedLogLevel): boolean {
@@ -97,15 +111,20 @@ function shouldEmit(level: EmittedLogLevel): boolean {
   return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[currentLogLevel];
 }
 
-function emit(level: EmittedLogLevel, event: string, fields: LogFields = {}): void {
+function emit(
+  level: EmittedLogLevel,
+  event: string,
+  fields: LogFields = {},
+  sensitiveValues: readonly string[] = [],
+): void {
   if (!shouldEmit(level)) {
     return;
   }
-  const message = redactText(event);
+  const message = redactTextWithSensitiveValues(event, sensitiveValues);
   let entry: LogFields;
   try {
     entry = {
-      ...sanitizeFields(fields),
+      ...sanitizeFields(fields, sensitiveValues),
       event: message,
       level,
       message,
@@ -159,6 +178,7 @@ export class RequestLogContext {
   private completed = false;
   private completionPromise?: Promise<void>;
   private remainingErrorBodyBytes = MAX_REQUEST_LOGGED_UPSTREAM_ERROR_BYTES;
+  private sensitiveValues: string[] = [];
 
   constructor(
     readonly requestId: string,
@@ -177,6 +197,13 @@ export class RequestLogContext {
 
   set(fields: LogFields): void {
     Object.assign(this.fields, fields);
+  }
+
+  registerSensitiveValues(values: Iterable<unknown>): void {
+    this.sensitiveValues = [...new Set([
+      ...this.sensitiveValues,
+      ...normalizedSensitiveValues(values),
+    ])].sort((left, right) => right.length - left.length);
   }
 
   mergeSection(section: string, fields: LogFields): void {
@@ -226,12 +253,17 @@ export class RequestLogContext {
   }
 
   private emitSummary(status: number, ok: boolean, durationMs: number): void {
-    emit(this.level, "request.summary", {
-      ...this.fields,
-      outcome: this.fields.outcome ?? (ok ? "success" : "failed"),
-      response_status: status,
-      duration_ms: durationMs,
-    });
+    emit(
+      this.level,
+      "request.summary",
+      {
+        ...this.fields,
+        outcome: this.fields.outcome ?? (ok ? "success" : "failed"),
+        response_status: status,
+        duration_ms: durationMs,
+      },
+      this.sensitiveValues,
+    );
   }
 
   complete(response: Response): Response {
