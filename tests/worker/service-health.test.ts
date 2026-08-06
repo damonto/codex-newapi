@@ -22,3 +22,17 @@ test("failure streaks and cooldowns survive Durable Object eviction", async () =
   await evictDurableObject(stub);
   expect(await stub.getStatus()).toEqual({ failures: 0, cooling_until: null });
 });
+
+test("immediate key cooldown survives eviction and can be cleared", async () => {
+  const stub = env.HEALTH.getByName(`key-cooldown-${crypto.randomUUID()}`);
+  const cooling = await stub.recordImmediateFailure();
+  expect(cooling.failures).toBe(1);
+  expect(cooling.cooling_until).toBeTypeOf("number");
+
+  await evictDurableObject(stub);
+  expect(await stub.getStatus()).toEqual(cooling);
+
+  expect(await stub.clear()).toEqual({ failures: 0, cooling_until: null });
+  await evictDurableObject(stub);
+  expect(await stub.getStatus()).toEqual({ failures: 0, cooling_until: null });
+});

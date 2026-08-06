@@ -26,6 +26,8 @@ const SERVICE_FIELDS = new Set([
   "disabled",
   "priority",
   "models",
+  "supports_websocket",
+  "supports_web_search",
   "retry",
 ]);
 const SERVICE_API_KEY_FIELDS = new Set([
@@ -82,6 +84,10 @@ function requiredBoolean(value: unknown, path: string): boolean {
     throw new ConfigError(`${path} must be a boolean`);
   }
   return value;
+}
+
+function optionalBoolean(value: unknown, path: string): boolean {
+  return value === undefined ? false : requiredBoolean(value, path);
 }
 
 function stringArray(value: unknown, path: string): string[] {
@@ -220,6 +226,14 @@ function parseService(value: unknown, index: number): ServiceConfig {
     disabled: requiredBoolean(value.disabled, `${path}.disabled`),
     priority: requiredInteger(value.priority, `${path}.priority`),
     models: stringArray(value.models, `${path}.models`),
+    supports_websocket: optionalBoolean(
+      value.supports_websocket,
+      `${path}.supports_websocket`,
+    ),
+    supports_web_search: optionalBoolean(
+      value.supports_web_search,
+      `${path}.supports_web_search`,
+    ),
     ...(retry === undefined ? {} : { retry }),
   };
 }

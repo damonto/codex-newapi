@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findClientApiKey, forwardRequestHeaders } from "../src/http.ts";
+import {
+  findClientApiKey,
+  forwardRequestHeaders,
+  forwardWebSocketHeaders,
+} from "../src/http.ts";
+import { ServiceHealthState } from "../src/health.ts";
 import {
   handleInference,
   rewriteModel,
+  sessionIdForInference,
 } from "../src/proxy.ts";
 
 function inferenceFixture(retry) {
@@ -27,12 +33,38 @@ function inferenceFixture(retry) {
     ],
     disabled: false,
     priority: 100,
+    supports_websocket: false,
+    supports_web_search: true,
     models: ["model"],
     ...(retry === undefined ? {} : { retry }),
   };
-  const calls = { failure: 0, success: 0 };
-  const snapshot = { failures: 0, cooling_until: null };
+  const calls = { failure: 0, keyFailure: 0, success: 0 };
+  const healthObjects = new Map();
+  const affinities = new Map();
+  const healthObject = (name) => {
+    if (!healthObjects.has(name)) {
+      const state = new ServiceHealthState();
+      healthObjects.set(name, {
+        clear: async () => state.clear(),
+        getStatus: async () => state.getStatus(),
+        recordFailure: async () => {
+          calls.failure += 1;
+          return state.recordFailure();
+        },
+        recordImmediateFailure: async () => {
+          calls.keyFailure += 1;
+          return state.recordImmediateFailure();
+        },
+        recordSuccess: async () => {
+          calls.success += 1;
+          return state.recordSuccess();
+        },
+      });
+    }
+    return healthObjects.get(name);
+  };
   return {
+    affinities,
     calls,
     client: { api_key: "client", services: [service.id] },
     config: {
@@ -42,15 +74,27 @@ function inferenceFixture(retry) {
     },
     env: {
       HEALTH: {
-        getByName: () => ({
-          getStatus: async () => snapshot,
-          recordFailure: async () => {
-            calls.failure += 1;
-            return snapshot;
-          },
-          recordSuccess: async () => {
-            calls.success += 1;
-            return snapshot;
+        getByName: healthObject,
+      },
+      SESSION_AFFINITY: {
+        getByName: (name) => ({
+          resolve: async (candidates, preferred) => {
+            const stored = affinities.get(name);
+            const isCandidate = (selection) => selection !== undefined &&
+              candidates.some((candidate) =>
+                candidate.service_id === selection.service_id &&
+                candidate.keys.some((key) => key.key_id === selection.key_id)
+              );
+            if (isCandidate(stored)) {
+              return { ...stored, updated_at: Date.now(), status: "hit" };
+            }
+            if (!isCandidate(preferred)) {
+              return undefined;
+            }
+            const status = stored === undefined ? "created" : "rebound";
+            const next = { ...preferred, updated_at: Date.now() };
+            affinities.set(name, next);
+            return { ...next, status };
           },
         }),
       },
@@ -75,6 +119,50 @@ test("mapping changes only the model value semantically", () => {
   const original = '{"model":"gpt-5.6-sol","stream":true,"input":"hello"}';
   const rewritten = JSON.parse(rewriteModel(original, JSON.parse(original), "grok-4.5"));
   assert.deepEqual(rewritten, { model: "grok-4.5", stream: true, input: "hello" });
+});
+
+test("session identifiers use header, metadata, then search id precedence", () => {
+  const headerRequest = new Request("https://gateway.example/v1/responses", {
+    headers: { "session-id": " header-session ", "thread-id": "thread" },
+  });
+  assert.equal(
+    sessionIdForInference(
+      headerRequest,
+      { model: "model", client_metadata: { session_id: "metadata" }, id: "search" },
+      "responses",
+    ),
+    "header-session",
+  );
+  assert.equal(
+    sessionIdForInference(
+      new Request("https://gateway.example/v1/responses", {
+        headers: { "thread-id": "thread-only" },
+      }),
+      { model: "model", client_metadata: { session_id: "metadata" } },
+      "responses",
+    ),
+    "metadata",
+  );
+  assert.equal(
+    sessionIdForInference(
+      new Request("https://gateway.example/v1/alpha/search", {
+        headers: { "thread-id": "thread-only" },
+      }),
+      { model: "model", id: "search-id" },
+      "alpha/search",
+    ),
+    "search-id",
+  );
+  assert.equal(
+    sessionIdForInference(
+      new Request("https://gateway.example/v1/responses", {
+        headers: { "thread-id": "thread-only" },
+      }),
+      { model: "model", id: "search-id" },
+      "responses",
+    ),
+    undefined,
+  );
 });
 
 test("Responses bodies remain unchanged when image generation is routable", async () => {
@@ -252,6 +340,9 @@ test("forwarding removes proxy metadata and client credentials", () => {
       "x-real-ip": "198.51.100.99",
       "cf-connecting-ip": "203.0.113.7",
       "x-api-key": "client",
+      "x-openai-actor-authorization": "codex-newapi",
+      "x-oai-attestation": "device-attestation",
+      "chatgpt-account-id": "account-id",
       "content-length": "10",
       "x-tenant": "tenant-a",
       "content-type": "application/json",
@@ -265,9 +356,28 @@ test("forwarding removes proxy metadata and client credentials", () => {
   assert.equal(headers.get("x-real-ip"), null);
   assert.equal(headers.get("cf-connecting-ip"), null);
   assert.equal(headers.get("x-api-key"), null);
+  assert.equal(headers.get("x-openai-actor-authorization"), null);
+  assert.equal(headers.get("x-oai-attestation"), null);
+  assert.equal(headers.get("chatgpt-account-id"), null);
   assert.equal(headers.get("content-length"), null);
   assert.equal(headers.get("x-tenant"), "tenant-a");
   assert.equal(headers.get("content-type"), "application/json");
+});
+
+test("WebSocket forwarding strips Codex credentials and attestation", () => {
+  const request = new Request("https://gateway.example/v1/responses", {
+    headers: {
+      "x-openai-actor-authorization": "codex-newapi",
+      "x-oai-attestation": "device-attestation",
+      "chatgpt-account-id": "account-id",
+      "x-tenant": "tenant-a",
+    },
+  });
+  const headers = forwardWebSocketHeaders(request, "upstream");
+  assert.equal(headers.get("x-openai-actor-authorization"), null);
+  assert.equal(headers.get("x-oai-attestation"), null);
+  assert.equal(headers.get("chatgpt-account-id"), null);
+  assert.equal(headers.get("x-tenant"), "tenant-a");
 });
 
 test("forwarding strips a client-supplied X-Real-IP", () => {
@@ -323,8 +433,106 @@ test("inference HTTP health only records 400 and 503 responses", async () => {
       );
       assert.equal(response.status, status);
       assert.equal(fixture.calls.failure, expectedFailures);
+      assert.equal(fixture.calls.keyFailure, 0);
       assert.equal(fixture.calls.success, 0);
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("inference immediately cools the selected key on HTTP 402 or 403", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const status of [402, 403]) {
+      const fixture = inferenceFixture();
+      globalThis.fetch = async () => new Response(null, { status });
+      const response = await handleInference(
+        inferenceRequest(),
+        fixture.env,
+        fixture.config,
+        fixture.client,
+        "responses",
+        `key-health-${status}`,
+      );
+      assert.equal(response.status, status);
+      assert.equal(fixture.calls.keyFailure, 1);
+      assert.equal(fixture.calls.failure, 0);
+      assert.equal(fixture.calls.success, 0);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a retrying 403 cools the key even when the same-key retry succeeds", async () => {
+  const fixture = inferenceFixture({ status_codes: [403], delays_ms: [0] });
+  const originalFetch = globalThis.fetch;
+  const authorizations = [];
+  let attempts = 0;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    authorizations.push(request.headers.get("authorization"));
+    attempts += 1;
+    return new Response(null, { status: attempts === 1 ? 403 : 200 });
+  };
+
+  try {
+    const response = await handleInference(
+      inferenceRequest(),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+      "retry-key-cooldown",
+      undefined,
+      { wait: async () => {} },
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(authorizations, [
+      "Bearer service-secret-key",
+      "Bearer service-secret-key",
+    ]);
+    assert.equal(fixture.calls.keyFailure, 1);
+    assert.equal(fixture.calls.success, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a cooled key affects only the next request, which may select another key", async () => {
+  const fixture = inferenceFixture();
+  const originalFetch = globalThis.fetch;
+  const authorizations = [];
+  let attempts = 0;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    authorizations.push(request.headers.get("authorization"));
+    attempts += 1;
+    return new Response(null, { status: attempts === 1 ? 403 : 200 });
+  };
+
+  try {
+    const first = await handleInference(
+      inferenceRequest(),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+    );
+    const second = await handleInference(
+      inferenceRequest(),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+    );
+    assert.equal(first.status, 403);
+    assert.equal(second.status, 200);
+    assert.deepEqual(authorizations, [
+      "Bearer service-secret-key",
+      "Bearer service-backup-key",
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -20,6 +20,8 @@
       ],
       "disabled": false,
       "priority": 100,
+      "supports_websocket": true,
+      "supports_web_search": true,
       "models": ["grok-4.5", "gpt-4.1", "gpt-image-2"],
       "retry": {
         "status_codes": [429],
@@ -39,6 +41,8 @@
       ],
       "disabled": false,
       "priority": 50,
+      "supports_websocket": false,
+      "supports_web_search": false,
       "models": ["grok-4.5"],
       "retry": {
         "status_codes": [429],

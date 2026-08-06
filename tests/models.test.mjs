@@ -9,6 +9,7 @@ import {
   MAX_MODEL_CATALOG_BODY_BYTES,
   MODEL_CATALOG_CONCURRENCY,
 } from "../src/models.ts";
+import { keyIsAvailable, ServiceHealthState } from "../src/health.ts";
 
 const results = [
   {
@@ -93,23 +94,34 @@ function modelConfig(serviceCount = 1) {
 }
 
 function healthEnvironment() {
-  const calls = { failure: 0, success: 0 };
-  const snapshot = { failures: 0, cooling_until: null };
-  const stub = {
-    getStatus: async () => snapshot,
-    recordFailure: async () => {
-      calls.failure += 1;
-      return snapshot;
-    },
-    recordSuccess: async () => {
-      calls.success += 1;
-      return snapshot;
-    },
+  const calls = { failure: 0, keyFailure: 0, success: 0 };
+  const objects = new Map();
+  const getByName = (name) => {
+    if (!objects.has(name)) {
+      const state = new ServiceHealthState();
+      objects.set(name, {
+        clear: async () => state.clear(),
+        getStatus: async () => state.getStatus(),
+        recordFailure: async () => {
+          calls.failure += 1;
+          return state.recordFailure();
+        },
+        recordImmediateFailure: async () => {
+          calls.keyFailure += 1;
+          return state.recordImmediateFailure();
+        },
+        recordSuccess: async () => {
+          calls.success += 1;
+          return state.recordSuccess();
+        },
+      });
+    }
+    return objects.get(name);
   };
   return {
     calls,
     env: {
-      HEALTH: { getByName: () => stub },
+      HEALTH: { getByName },
       MODELS_CACHE_TTL_SECONDS: "0",
     },
   };
@@ -160,6 +172,64 @@ test("HTTP 503 model catalog responses increment catalog health", async () => {
     const response = await handleModels(modelRequest(), env, config, client, "test");
     assert.equal(response.status, 502);
     assert.equal(calls.failure, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("HTTP 403 model catalog responses cool only the selected catalog key", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  const client = config.api_keys[0];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(null, { status: 403 });
+  const { calls, env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(modelRequest(), env, config, client, "test");
+    assert.equal(response.status, 502);
+    assert.equal(calls.keyFailure, 1);
+    assert.equal(calls.failure, 0);
+    assert.equal(
+      await keyIsAvailable(env, "service-0", "primary-key-0", "test", "catalog"),
+      false,
+    );
+    assert.equal(
+      await keyIsAvailable(env, "service-0", "primary-key-0", "test", "inference"),
+      true,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a catalog-cooled key is replaced only on the next catalog request", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  const client = config.api_keys[0];
+  const originalFetch = globalThis.fetch;
+  const authorizations = [];
+  let attempts = 0;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    authorizations.push(request.headers.get("authorization"));
+    attempts += 1;
+    return attempts === 1
+      ? new Response(null, { status: 403 })
+      : Response.json({ data: [{ id: "model", object: "model" }] });
+  };
+  const { env } = healthEnvironment();
+
+  try {
+    const first = await handleModels(modelRequest(), env, config, client, "first");
+    clearModelsCacheForTests();
+    const second = await handleModels(modelRequest(), env, config, client, "second");
+    assert.equal(first.status, 502);
+    assert.equal(second.status, 200);
+    assert.deepEqual(authorizations, [
+      "Bearer upstream-0",
+      "Bearer upstream-backup-0",
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

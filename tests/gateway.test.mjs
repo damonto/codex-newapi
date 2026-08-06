@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { clearConfigCacheForTests } from "../src/config.ts";
-import { FAILURE_THRESHOLD, serviceIsAvailable, ServiceHealthState } from "../src/health.ts";
+import {
+  FAILURE_THRESHOLD,
+  keyIsAvailable,
+  serviceIsAvailable,
+  ServiceHealthState,
+} from "../src/health.ts";
 import worker from "../src/index.ts";
 import { clearModelsCacheForTests } from "../src/models.ts";
 
@@ -28,6 +33,8 @@ function gatewayConfig() {
         ],
         disabled: false,
         priority: 100,
+        supports_websocket: true,
+        supports_web_search: true,
         models: ["grok-4.5", "review-model"],
       },
     ],
@@ -41,6 +48,7 @@ function gatewayConfig() {
 
 function testEnv(config) {
   const healthObjects = new Map();
+  const affinities = new Map();
   return {
     CODEX_NEWAPI_CONFIG_KV: {
       get: async () => JSON.stringify(config),
@@ -52,6 +60,29 @@ function testEnv(config) {
         }
         return healthObjects.get(name);
       },
+    },
+    SESSION_AFFINITY: {
+      getByName: (name) => ({
+        resolve: async (candidates, preferred) => {
+          const stored = affinities.get(name);
+          const isCandidate = (selection) => selection !== undefined &&
+            candidates.some((candidate) =>
+              candidate.service_id === selection.service_id &&
+              candidate.keys.some((key) => key.key_id === selection.key_id)
+            );
+          if (isCandidate(stored)) {
+            return { ...stored, updated_at: Date.now(), status: "hit" };
+          }
+          if (!isCandidate(preferred)) {
+            affinities.delete(name);
+            return undefined;
+          }
+          const status = stored === undefined ? "created" : "rebound";
+          const next = { ...preferred, updated_at: Date.now() };
+          affinities.set(name, next);
+          return { ...next, status };
+        },
+      }),
     },
     CONFIG_KEY: "gateway-config",
     CONFIG_CACHE_TTL_SECONDS: "0",
@@ -149,6 +180,271 @@ test("Worker maps the model, replaces authorization, and preserves the upstream 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Worker forwards alpha search and responses compact aliases with response fidelity", async () => {
+  clearConfigCacheForTests();
+  const originalFetch = globalThis.fetch;
+  const captured = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    captured.push({
+      url: request.url,
+      authorization: request.headers.get("authorization"),
+      tenant: request.headers.get("x-tenant"),
+      body: JSON.parse(await request.text()),
+    });
+    return new Response("upstream-body", {
+      status: 202,
+      headers: {
+        "content-type": "application/json",
+        "x-upstream-marker": "preserved",
+      },
+    });
+  };
+
+  const paths = [
+    "/alpha/search",
+    "/v1/alpha/search",
+    "/responses/compact",
+    "/v1/responses/compact",
+  ];
+  try {
+    const env = testEnv(gatewayConfig());
+    for (const path of paths) {
+      const response = await worker.fetch(
+        new Request(`https://gateway.example${path}?trace=${encodeURIComponent(path)}`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer client-key",
+            "content-type": "application/json",
+            "x-tenant": "tenant-a",
+          },
+          body: JSON.stringify({
+            model: "gpt-5.6-sol",
+            id: "search-session",
+            input: "hello",
+          }),
+        }),
+        env,
+        {},
+      );
+      assert.equal(response.status, 202);
+      assert.equal(response.headers.get("x-upstream-marker"), "preserved");
+      assert.equal(await response.text(), "upstream-body");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(
+    captured.map((entry) => ({
+      ...entry,
+      url: new URL(entry.url).pathname,
+      search: new URL(entry.url).search,
+    })),
+    [
+      {
+        url: "/v1/alpha/search",
+        search: "?trace=%2Falpha%2Fsearch",
+        authorization: "Bearer upstream-key",
+        tenant: "tenant-a",
+        body: { model: "grok-4.5", id: "search-session", input: "hello" },
+      },
+      {
+        url: "/v1/alpha/search",
+        search: "?trace=%2Fv1%2Falpha%2Fsearch",
+        authorization: "Bearer upstream-key",
+        tenant: "tenant-a",
+        body: { model: "grok-4.5", id: "search-session", input: "hello" },
+      },
+      {
+        url: "/v1/responses/compact",
+        search: "?trace=%2Fresponses%2Fcompact",
+        authorization: "Bearer upstream-key",
+        tenant: "tenant-a",
+        body: { model: "grok-4.5", id: "search-session", input: "hello" },
+      },
+      {
+        url: "/v1/responses/compact",
+        search: "?trace=%2Fv1%2Fresponses%2Fcompact",
+        authorization: "Bearer upstream-key",
+        tenant: "tenant-a",
+        body: { model: "grok-4.5", id: "search-session", input: "hello" },
+      },
+    ],
+  );
+});
+
+test("alpha search skips higher-priority services without web search support", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.services[0].supports_web_search = false;
+  config.services.push({
+    id: "search",
+    base_url: "https://search.example/v1",
+    keys: [{
+      id: "search-key",
+      api_key: "search-upstream-key",
+      disabled: false,
+      priority: 100,
+    }],
+    disabled: false,
+    priority: 50,
+    supports_websocket: false,
+    supports_web_search: true,
+    models: ["grok-4.5"],
+  });
+  config.api_keys[0].services.push("search");
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    captured = {
+      url: request.url,
+      authorization: request.headers.get("authorization"),
+    };
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/alpha/search", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      testEnv(config),
+      {},
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(captured, {
+    url: "https://search.example/v1/alpha/search",
+    authorization: "Bearer search-upstream-key",
+  });
+});
+
+test("alpha search does not forward when no service declares web search support", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.services[0].supports_web_search = false;
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/alpha/search", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      testEnv(config),
+      {},
+    );
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, "model_not_found");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls, 0);
+});
+
+test("new HTTP forwarding endpoints accept POST only", async () => {
+  clearConfigCacheForTests();
+  const env = testEnv(gatewayConfig());
+  for (const path of ["/alpha/search", "/v1/responses/compact"]) {
+    const response = await worker.fetch(
+      new Request(`https://gateway.example${path}`, {
+        headers: { authorization: "Bearer client-key" },
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 405);
+  }
+});
+
+test("session-id header and client metadata share the same persistent binding", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.services.push({
+    id: "peer",
+    base_url: "https://peer.example/v1",
+    keys: [{
+      id: "peer-key",
+      api_key: "peer-upstream-key",
+      disabled: false,
+      priority: 100,
+    }],
+    disabled: false,
+    priority: 100,
+    models: ["grok-4.5"],
+  });
+  config.api_keys[0].services.push("peer");
+  const originalFetch = globalThis.fetch;
+  const targets = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    targets.push([request.url, request.headers.get("authorization")]);
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const env = testEnv(config);
+    const headerBound = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+          "session-id": "stable-session",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.6-sol",
+          client_metadata: { session_id: "ignored-session" },
+        }),
+      }),
+      env,
+      {},
+    );
+    const metadataBound = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.6-sol",
+          client_metadata: { session_id: "stable-session" },
+        }),
+      }),
+      env,
+      {},
+    );
+    assert.equal(headerBound.status, 200);
+    assert.equal(metadataBound.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(targets.length, 2);
+  assert.deepEqual(targets[1], targets[0]);
 });
 
 test("Worker proxies Codex image generation and edits through model routing", async () => {
@@ -537,7 +833,7 @@ test("model catalog fan-out is summarized in one request log", async () => {
     { service_id: "primary", key_id: "primary-key" },
   ]);
   assert.deepEqual(entry.routing.checked_available_services, ["primary"]);
-  assert.equal(entry.routing.service_checks[0].key_id, "primary-key");
+  assert.equal(entry.routing.key_checks[0].key_id, "primary-key");
   assert.equal(entry.catalog.cache, "miss");
   assert.equal(Object.hasOwn(entry.catalog, "upstream_errors"), false);
   assert.equal(Object.hasOwn(entry.catalog, "returned_model_count"), false);
@@ -1038,6 +1334,8 @@ test("an authenticated client can list and clear health only for allowed service
     env.HEALTH.getByName("primary:catalog").recordFailure();
     env.HEALTH.getByName("secondary").recordFailure();
   }
+  env.HEALTH.getByName("key:primary:primary-key").recordImmediateFailure();
+  env.HEALTH.getByName("key:primary:primary-key:catalog").recordImmediateFailure();
   assert.equal(await serviceIsAvailable(env, "primary"), false);
 
   const cooling = env.HEALTH.getByName("primary").getStatus();
@@ -1052,7 +1350,14 @@ test("an authenticated client can list and clear health only for allowed service
   assert.deepEqual(await list.json(), {
     object: "list",
     scope: "inference",
-    data: [{ service_id: "primary", ...cooling }],
+    data: [
+      { service_id: "primary", ...cooling },
+      {
+        service_id: "primary",
+        key_id: "primary-key",
+        ...env.HEALTH.getByName("key:primary:primary-key").getStatus(),
+      },
+    ],
   });
 
   const catalogCooling = env.HEALTH.getByName("primary:catalog").getStatus();
@@ -1066,8 +1371,49 @@ test("an authenticated client can list and clear health only for allowed service
   assert.deepEqual(await catalogList.json(), {
     object: "list",
     scope: "catalog",
-    data: [{ service_id: "primary", ...catalogCooling }],
+    data: [
+      { service_id: "primary", ...catalogCooling },
+      {
+        service_id: "primary",
+        key_id: "primary-key",
+        ...env.HEALTH.getByName("key:primary:primary-key:catalog").getStatus(),
+      },
+    ],
   });
+
+  const catalogKeyResponse = await worker.fetch(
+    new Request("https://gateway.example/health/primary/primary-key?scope=catalog", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.equal(catalogKeyResponse.status, 200);
+  assert.equal(
+    await keyIsAvailable(env, "primary", "primary-key", "test", "catalog"),
+    true,
+  );
+  assert.equal(await serviceIsAvailable(env, "primary", "test", "catalog"), false);
+
+  const keyResponse = await worker.fetch(
+    new Request("https://gateway.example/v1/health/primary/primary-key", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.equal(keyResponse.status, 200);
+  assert.deepEqual(await keyResponse.json(), {
+    service_id: "primary",
+    key_id: "primary-key",
+    scope: "inference",
+    failures: 0,
+    cooling_until: null,
+  });
+  assert.equal(await keyIsAvailable(env, "primary", "primary-key"), true);
+  assert.equal(await serviceIsAvailable(env, "primary"), false);
 
   const response = await worker.fetch(
     new Request("https://gateway.example/v1/health/primary", {
@@ -1104,6 +1450,16 @@ test("an authenticated client can list and clear health only for allowed service
     {},
   );
   assert.equal(forbidden.status, 404);
+
+  const missingKey = await worker.fetch(
+    new Request("https://gateway.example/v1/health/primary/missing-key", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.equal(missingKey.status, 404);
 });
 
 test("health endpoints reject an invalid scope", async () => {

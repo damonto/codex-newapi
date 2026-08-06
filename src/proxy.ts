@@ -1,4 +1,6 @@
 import {
+  isKeyHealthFailureStatus,
+  recordKeyFailure,
   recordServiceFailure,
   recordServiceSuccess,
   isHealthFailureStatus,
@@ -45,6 +47,8 @@ interface InferencePayload {
 
 export type InferencePath =
   | "responses"
+  | "responses/compact"
+  | "alpha/search"
   | "chat/completions"
   | "images/generations"
   | "images/edits";
@@ -52,8 +56,10 @@ export type InferencePath =
 const MAX_INFERENCE_BODY_MIB = 96;
 export const MAX_INFERENCE_BODY_BYTES = MAX_INFERENCE_BODY_MIB * 1024 * 1024;
 
-interface InferenceRetryOptions {
+export interface UpstreamRetryOptions {
   wait?: (delayMs: number) => Promise<void>;
+  onResponse?: (response: Response, attempt: number) => Promise<void> | void;
+  attemptTimeoutMs?: number;
 }
 
 interface UpstreamAttemptLog {
@@ -64,7 +70,7 @@ interface UpstreamAttemptLog {
   error?: string;
 }
 
-interface FetchWithRetriesResult {
+export interface FetchWithRetriesResult {
   response?: Response;
   attempts: UpstreamAttemptLog[];
   error?: unknown;
@@ -74,17 +80,61 @@ function wait(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
-async function fetchWithConfiguredRetries(
+export class UpstreamAttemptTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`upstream request timed out after ${timeoutMs} ms`);
+    this.name = "UpstreamAttemptTimeoutError";
+  }
+}
+
+async function fetchAttempt(
+  request: Request,
+  timeoutMs: number | undefined,
+): Promise<Response> {
+  if (timeoutMs === undefined) {
+    return fetch(request);
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError("attemptTimeoutMs must be a positive finite number");
+  }
+
+  const timeoutController = new AbortController();
+  let timeoutError: UpstreamAttemptTimeoutError | undefined;
+  const timeout = setTimeout(() => {
+    timeoutError = new UpstreamAttemptTimeoutError(timeoutMs);
+    timeoutController.abort(timeoutError);
+  }, timeoutMs);
+  const signal = AbortSignal.any([
+    request.signal,
+    timeoutController.signal,
+  ]);
+
+  try {
+    return await fetch(new Request(request, { signal }));
+  } catch (error) {
+    if (timeoutError && !request.signal.aborted) {
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function fetchWithConfiguredRetries(
   makeRequest: () => Request,
   retry: ServiceRetryConfig | undefined,
-  retryOptions: InferenceRetryOptions,
+  retryOptions: UpstreamRetryOptions,
 ): Promise<FetchWithRetriesResult> {
   const attempts: UpstreamAttemptLog[] = [];
   for (let attemptIndex = 0; ; attemptIndex += 1) {
     const attemptStartedAt = performance.now();
     let response: Response;
     try {
-      response = await fetch(makeRequest());
+      response = await fetchAttempt(
+        makeRequest(),
+        retryOptions.attemptTimeoutMs,
+      );
     } catch (error) {
       attempts.push({
         attempt: attemptIndex + 1,
@@ -100,6 +150,7 @@ async function fetchWithConfiguredRetries(
       duration_ms: elapsedMs(attemptStartedAt),
     };
     attempts.push(attempt);
+    await retryOptions.onResponse?.(response, attemptIndex + 1);
     const delayMs = retry?.delays_ms[attemptIndex];
     if (
       retry === undefined ||
@@ -117,6 +168,37 @@ async function fetchWithConfiguredRetries(
       return { attempts, error };
     }
   }
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+export function sessionIdForInference(
+  request: Request,
+  payload: InferencePayload,
+  upstreamPath: InferencePath,
+): string | undefined {
+  const headerSessionId = nonEmptyString(request.headers.get("session-id"));
+  if (headerSessionId) {
+    return headerSessionId;
+  }
+  const clientMetadata = payload.client_metadata;
+  if (
+    typeof clientMetadata === "object" &&
+    clientMetadata !== null &&
+    !Array.isArray(clientMetadata)
+  ) {
+    const metadataSessionId = nonEmptyString(
+      (clientMetadata as Record<string, unknown>).session_id,
+    );
+    if (metadataSessionId) {
+      return metadataSessionId;
+    }
+  }
+  return upstreamPath === "alpha/search"
+    ? nonEmptyString(payload.id)
+    : undefined;
 }
 
 function parseInferencePayload(text: string): InferencePayload {
@@ -155,7 +237,7 @@ export async function handleInference(
   upstreamPath: InferencePath,
   requestId = "unknown",
   context?: HealthExecutionContext,
-  retryOptions: InferenceRetryOptions = {},
+  retryOptions: UpstreamRetryOptions = {},
   requestLog?: RequestLogContext,
 ): Promise<Response> {
   requestLog?.registerSensitiveValues([
@@ -197,7 +279,14 @@ export async function handleInference(
     return openAiError(400, error instanceof Error ? error.message : "invalid request body");
   }
 
-  const route = resolveModelRoute(config, client, payload.model);
+  const route = resolveModelRoute(
+    config,
+    client,
+    payload.model,
+    upstreamPath === "alpha/search"
+      ? { requiredCapability: "supports_web_search" }
+      : {},
+  );
   const candidateServices = route.targets.map((target) => target.service.id);
   requestLog?.set({
     model: {
@@ -211,7 +300,12 @@ export async function handleInference(
     requestLog?.warn({ outcome: "model_not_found" });
     return openAiError(400, `Model ${payload.model} is not available for this API key`, "invalid_request_error", "model_not_found");
   }
-  const selection = await selectAvailableServiceWithDetails(env, route);
+  const sessionId = sessionIdForInference(request, payload, upstreamPath);
+  const selection = await selectAvailableServiceWithDetails(env, route, {
+    ...(sessionId
+      ? { session: { clientApiKey: client.api_key, sessionId } }
+      : {}),
+  });
   const target = selection.target;
   const routing = {
     candidate_services: candidateServices,
@@ -219,6 +313,8 @@ export async function handleInference(
       .filter((check) => check.available)
       .map((check) => check.service_id),
     service_checks: selection.checks,
+    key_checks: selection.keyChecks,
+    ...(selection.affinity ? { affinity: selection.affinity } : {}),
     ...(target
       ? {
         selected_service: target.service.id,
@@ -226,7 +322,11 @@ export async function handleInference(
       }
       : {}),
   };
-  if (selection.checks.some((check) => check.reason === "health_read_failed")) {
+  if (
+    selection.checks.some((check) => check.reason === "health_read_failed") ||
+    selection.keyChecks.some((check) => check.reason === "health_read_failed") ||
+    selection.affinity?.status === "failed"
+  ) {
     requestLog?.warn({ routing });
   } else {
     requestLog?.set({ routing });
@@ -263,7 +363,18 @@ export async function handleInference(
       redirect: "manual",
     }),
     service.retry,
-    retryOptions,
+    {
+      ...retryOptions,
+      onResponse: async (response, attempt) => {
+        await retryOptions.onResponse?.(response, attempt);
+        if (isKeyHealthFailureStatus(response.status)) {
+          await scheduleHealthUpdate(
+            context,
+            recordKeyFailure(env, service.id, selectedKey.id, requestId),
+          );
+        }
+      },
+    },
   );
   const upstreamDurationMs = elapsedMs(startedAt);
   if (!result.response) {

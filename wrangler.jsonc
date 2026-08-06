@@ -25,6 +25,14 @@
 			{
 				"name": "HEALTH",
 				"class_name": "ServiceHealth"
+			},
+			{
+				"name": "SESSION_AFFINITY",
+				"class_name": "SessionAffinity"
+			},
+			{
+				"name": "RESPONSES_WEBSOCKET",
+				"class_name": "ResponsesWebSocketProxy"
 			}
 		]
 	},
@@ -33,6 +41,18 @@
 			"tag": "v1",
 			"new_sqlite_classes": [
 				"ServiceHealth"
+			]
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": [
+				"SessionAffinity"
+			]
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": [
+				"ResponsesWebSocketProxy"
 			]
 		}
 	]

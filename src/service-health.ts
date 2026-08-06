@@ -73,6 +73,13 @@ export class ServiceHealth extends DurableObject<Env> {
     return snapshot;
   }
 
+  async recordImmediateFailure(): Promise<ServiceHealthSnapshot> {
+    const { health, stored } = await this.load();
+    const snapshot = health.recordImmediateFailure();
+    await this.persist(stored, health.getStoredState());
+    return snapshot;
+  }
+
   async clear(): Promise<ServiceHealthSnapshot> {
     const { health, stored } = await this.load();
     const snapshot = health.clear();

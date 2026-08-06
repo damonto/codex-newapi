@@ -83,6 +83,14 @@
               "minLength": 1
             }
           },
+          "supports_websocket": {
+            "type": "boolean",
+            "default": false
+          },
+          "supports_web_search": {
+            "type": "boolean",
+            "default": false
+          },
           "retry": {
             "type": "object",
             "additionalProperties": false,

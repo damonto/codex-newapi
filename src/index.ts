@@ -1,7 +1,8 @@
 import { ConfigError, loadConfig } from "./config.ts";
 import {
+  clearKeyHealth,
   clearServiceHealth,
-  listCoolingServices,
+  listCoolingHealth,
   type HealthScope,
 } from "./health.ts";
 import { bearerToken, findClientApiKey, jsonResponse, openAiError } from "./http.ts";
@@ -13,16 +14,28 @@ import {
 } from "./log.ts";
 import { handleModels } from "./models.ts";
 import { handleInference, type InferencePath } from "./proxy.ts";
-import type { ClientApiKeyConfig } from "./types.ts";
+import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
+import { handleResponsesWebSocket } from "./websocket.ts";
 
 type GatewayEndpoint = "models" | "health" | InferencePath;
 
 type GatewayRoute =
   | { endpoint: Exclude<GatewayEndpoint, "health"> }
   | { endpoint: "health"; action: "list" }
-  | { endpoint: "health"; action: "clear"; serviceId: string };
+  | { endpoint: "health"; action: "clear"; serviceId: string; keyId?: string };
 
 function route(pathname: string): GatewayRoute | undefined {
+  const keyHealthMatch = pathname.match(
+    /^\/(?:v1\/)?health\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/,
+  );
+  if (keyHealthMatch) {
+    return {
+      endpoint: "health",
+      action: "clear",
+      serviceId: keyHealthMatch[1],
+      keyId: keyHealthMatch[2],
+    };
+  }
   const healthMatch = pathname.match(/^\/(?:v1\/)?health\/([A-Za-z0-9._-]+)$/);
   if (healthMatch) {
     return { endpoint: "health", action: "clear", serviceId: healthMatch[1] };
@@ -37,6 +50,12 @@ function route(pathname: string): GatewayRoute | undefined {
     case "/responses":
     case "/v1/responses":
       return { endpoint: "responses" };
+    case "/responses/compact":
+    case "/v1/responses/compact":
+      return { endpoint: "responses/compact" };
+    case "/alpha/search":
+    case "/v1/alpha/search":
+      return { endpoint: "alpha/search" };
     case "/chat/completions":
     case "/v1/chat/completions":
       return { endpoint: "chat/completions" };
@@ -74,6 +93,7 @@ function expectedMethod(route: GatewayRoute): "GET" | "POST" | "DELETE" {
 
 async function handleHealthList(
   env: Env,
+  config: GatewayConfig,
   client: ClientApiKeyConfig,
   incomingUrl: URL,
   requestLog: RequestLogContext,
@@ -86,12 +106,21 @@ async function handleHealthList(
     });
     return invalidHealthScope();
   }
-  const data = await listCoolingServices(env, client.services, scope);
+  const allowed = new Set(client.services);
+  const services = config.services.filter((service) => allowed.has(service.id));
+  const data = await listCoolingHealth(env, services, scope);
   requestLog.set({
     health: {
       action: "list",
       scope,
-      cooling_services: data.map((entry) => entry.service_id),
+      cooling_services: data
+        .filter((entry) => !("key_id" in entry))
+        .map((entry) => entry.service_id),
+      cooling_keys: data.flatMap((entry) =>
+        "key_id" in entry
+          ? [{ service_id: entry.service_id, key_id: entry.key_id }]
+          : []
+      ),
     },
   });
   return jsonResponse({
@@ -103,13 +132,16 @@ async function handleHealthList(
 
 async function handleHealthClear(
   env: Env,
+  config: GatewayConfig,
   client: ClientApiKeyConfig,
   incomingUrl: URL,
   serviceId: string,
+  keyId: string | undefined,
   requestId: string,
   requestLog: RequestLogContext,
 ): Promise<Response> {
-  if (!client.services.includes(serviceId)) {
+  const service = config.services.find((entry) => entry.id === serviceId);
+  if (!service || !client.services.includes(serviceId)) {
     requestLog.warn({
       outcome: "service_not_found",
       health: { action: "clear", service_id: serviceId },
@@ -119,6 +151,18 @@ async function handleHealthClear(
       `Service ${serviceId} is not available for this API key`,
       "invalid_request_error",
       "service_not_found",
+    );
+  }
+  if (keyId !== undefined && !service.keys.some((key) => key.id === keyId)) {
+    requestLog.warn({
+      outcome: "key_not_found",
+      health: { action: "clear", service_id: serviceId, key_id: keyId },
+    });
+    return openAiError(
+      404,
+      `Key ${keyId} is not available in service ${serviceId}`,
+      "invalid_request_error",
+      "key_not_found",
     );
   }
   const scope = healthScope(incomingUrl);
@@ -133,20 +177,33 @@ async function handleHealthClear(
     });
     return invalidHealthScope();
   }
-  const snapshot = await clearServiceHealth(env, serviceId, requestId, scope);
+  const snapshot = keyId === undefined
+    ? await clearServiceHealth(env, serviceId, requestId, scope)
+    : await clearKeyHealth(env, serviceId, keyId, requestId, scope);
   requestLog.set({
     health: {
       action: "clear",
       service_id: serviceId,
+      ...(keyId === undefined ? {} : { key_id: keyId }),
       scope,
       ...snapshot,
     },
   });
   return jsonResponse({
     service_id: serviceId,
+    ...(keyId === undefined ? {} : { key_id: keyId }),
     scope,
     ...snapshot,
   });
+}
+
+function isResponsesWebSocketRequest(
+  request: Request,
+  matchedRoute: GatewayRoute,
+): boolean {
+  return matchedRoute.endpoint === "responses" &&
+    request.method === "GET" &&
+    request.headers.get("upgrade")?.toLowerCase() === "websocket";
 }
 
 export default {
@@ -167,8 +224,9 @@ export default {
       requestLog.warn({ outcome: "route_not_found" });
       return finish(openAiError(404, "Not found", "invalid_request_error", "not_found"));
     }
+    const websocketRequest = isResponsesWebSocketRequest(request, matchedRoute);
     const allowedMethod = expectedMethod(matchedRoute);
-    if (request.method !== allowedMethod) {
+    if (!websocketRequest && request.method !== allowedMethod) {
       requestLog.warn({
         outcome: "method_rejected",
         expected_method: allowedMethod,
@@ -209,15 +267,27 @@ export default {
         ? await handleModels(request, env, config, client, requestId, context, requestLog)
         : matchedRoute.endpoint === "health"
         ? matchedRoute.action === "list"
-          ? await handleHealthList(env, client, incomingUrl, requestLog)
+          ? await handleHealthList(env, config, client, incomingUrl, requestLog)
           : await handleHealthClear(
             env,
+            config,
             client,
             incomingUrl,
             matchedRoute.serviceId,
+            matchedRoute.keyId,
             requestId,
             requestLog,
           )
+        : websocketRequest
+        ? await handleResponsesWebSocket(
+          request,
+          env,
+          config,
+          client,
+          requestId,
+          context,
+          requestLog,
+        )
         : await handleInference(
           request,
           env,

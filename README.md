@@ -8,9 +8,11 @@ Use several NewAPI services through one Cloudflare Workers endpoint. It works wi
 
 - Combines multiple NewAPI services behind one address.
 - Routes models by priority and controls access with client API keys.
-- Supports multiple manually selected upstream API keys per service.
+- Supports multiple upstream API keys per service with independent cooldowns.
 - Supports client-facing model routes with optional service constraints.
 - Supports Codex Image Gen through configured `gpt-image-2` services.
+- Proxies Codex Responses WebSockets, standalone search, and remote compaction.
+- Keeps a session on the same service/key while that target remains available.
 - Can retry selected status codes with a separate policy for each service.
 
 ## Quick setup
@@ -67,6 +69,8 @@ npm run deploy
       ],
       "disabled": false,
       "priority": 100,
+      "supports_websocket": true,
+      "supports_web_search": true,
       "models": ["grok-4.5", "gpt-image-2"],
       "retry": {
         "status_codes": [429],
@@ -93,20 +97,36 @@ npm run deploy
 ```
 
 - `services`: upstream services and the models they provide. Higher priority wins.
-- `services[].keys`: upstream credentials for one service. The highest-priority enabled key is selected; equal priorities preserve configuration order.
+- `services[].keys`: upstream credentials for one service. The highest-priority available key group is used; equal priorities are selected uniformly at random.
+- `services[].supports_websocket`: whether the service can receive Responses WebSocket connections. Defaults to `false` when omitted.
+- `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests. Defaults to `false` when omitted.
 - `api_keys`: keys used by your clients and the services each key may access.
 - `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services.
 - `retry`: optional status codes and delays. Each delay adds one retry; omitting this field disables retries.
 
 When a route omits `services`, all client-authorized services that list its upstream model are eligible. When `services` is present, it is intersected with the client API key's allowed services. Unconfigured model names are forwarded directly.
 
-Key switching is manual: change a key's `disabled` or `priority` value and upload the configuration again. Requests and configured retries never switch keys automatically. If the service is already in inference cooldown, clear it with `DELETE /health/{service_id}` after changing keys. Use `scope=catalog` to clear a catalog cooldown.
+Standalone search selects only services with `supports_web_search: true`. Responses WebSocket connections select only services with `supports_websocket: true`. These filters are applied before random selection and session affinity; ordinary HTTP Responses and compact requests do not require either capability.
+
+Services are considered by highest available priority, with equal-priority services selected uniformly at random. A session ID from the `session-id` header or `client_metadata.session_id` keeps subsequent requests on the same service/key while that target remains eligible and healthy. Standalone search also accepts its top-level `id` as the lowest-priority session identifier. `thread-id` is not used for affinity.
+
+HTTP 402 and 403 responses immediately cool only the selected key for 30 minutes. Configured retries still use that same key and never switch service/key during the current request; the cooldown affects later requests. Service and key inference cooldowns can be listed with `GET /health`, cleared with `DELETE /health/{service_id}` or `DELETE /health/{service_id}/{key_id}`, and isolated catalog cooldowns use `scope=catalog`.
 
 Every service must declare a non-empty `keys` array, although all entries may be disabled to take that service out of routing. The former `services[].api_key` field is no longer accepted.
 
 Key IDs appear in structured logs. Use descriptive, non-sensitive labels and never copy credential values into `id`.
 
 To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through `model_routes`.
+
+The gateway accepts both versioned and unversioned forms of these inference paths:
+
+- `POST /responses`
+- `GET /responses` with a WebSocket upgrade
+- `POST /responses/compact`
+- `POST /alpha/search`
+- `POST /chat/completions`
+- `POST /images/generations`
+- `POST /images/edits`
 
 After changing `config.json`, upload it again. A Worker redeploy is not required:
 

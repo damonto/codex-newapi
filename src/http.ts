@@ -25,6 +25,9 @@ const SENSITIVE_REQUEST_HEADERS = new Set([
   "x-auth-token",
   "x-access-token",
   "x-client-key",
+  "x-openai-actor-authorization",
+  "x-oai-attestation",
+  "chatgpt-account-id",
   "x-real-ip",
   "x-client-ip",
   "true-client-ip",
@@ -35,11 +38,25 @@ export function shouldStripRequestHeader(name: string): boolean {
   const lowerName = name.toLowerCase();
   return HOP_BY_HOP_HEADERS.has(lowerName) ||
     SENSITIVE_REQUEST_HEADERS.has(lowerName) ||
+    lowerName.startsWith("x-codex-newapi-") ||
     lowerName.startsWith("x-forwarded-") ||
     lowerName.startsWith("x-real-") ||
     lowerName.startsWith("x-envoy-") ||
     lowerName.startsWith("cf-") ||
     lowerName.startsWith("proxy-");
+}
+
+export function forwardableWebSocketHeaders(request: Request): Headers {
+  const headers = new Headers();
+  request.headers.forEach((value, name) => {
+    if (
+      !shouldStripRequestHeader(name) &&
+      !name.toLowerCase().startsWith("sec-websocket-")
+    ) {
+      headers.set(name, value);
+    }
+  });
+  return headers;
 }
 
 export function jsonResponse(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {
@@ -82,6 +99,27 @@ export function findClientApiKey(
 
 async function digestSecret(value: string): Promise<ArrayBuffer> {
   return crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+}
+
+function hexDigest(value: ArrayBuffer): string {
+  return [...new Uint8Array(value)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function parseHexDigest(value: string): ArrayBuffer | undefined {
+  if (!/^[a-f0-9]{64}$/i.test(value)) {
+    return undefined;
+  }
+  const bytes = new Uint8Array(32);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes.buffer as ArrayBuffer;
+}
+
+export async function clientApiKeyDigest(value: string): Promise<string> {
+  return hexDigest(await digestSecret(value));
 }
 
 interface TimingSafeSubtleCrypto extends SubtleCrypto {
@@ -130,6 +168,24 @@ async function findClientApiKeyByToken(
   return matched;
 }
 
+export async function findClientApiKeyByDigest(
+  digest: string,
+  entries: ClientApiKeyConfig[],
+): Promise<ClientApiKeyConfig | undefined> {
+  const providedDigest = parseHexDigest(digest);
+  if (!providedDigest) {
+    return undefined;
+  }
+  let matched: ClientApiKeyConfig | undefined;
+  for (const entry of entries) {
+    const expectedDigest = await digestSecret(entry.api_key);
+    if (equalDigests(providedDigest, expectedDigest) && matched === undefined) {
+      matched = entry;
+    }
+  }
+  return matched;
+}
+
 export function upstreamUrl(service: ServiceConfig, path: string, search = ""): string {
   const base = service.base_url.replace(/\/+$/, "");
   const suffix = path.replace(/^\/+/, "");
@@ -144,5 +200,15 @@ export function forwardRequestHeaders(request: Request, serviceApiKey: string): 
     }
   });
   headers.set("authorization", `Bearer ${serviceApiKey}`);
+  return headers;
+}
+
+export function forwardWebSocketHeaders(
+  request: Request,
+  serviceApiKey: string,
+): Headers {
+  const headers = forwardableWebSocketHeaders(request);
+  headers.set("authorization", `Bearer ${serviceApiKey}`);
+  headers.set("upgrade", "websocket");
   return headers;
 }

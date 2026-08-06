@@ -13,15 +13,18 @@ import {
   upstreamUrl,
 } from "./http.ts";
 import {
-  getServiceAvailability,
+  isKeyHealthFailureStatus,
   recordServiceFailure,
+  recordKeyFailure,
   recordServiceSuccess,
   isHealthFailureStatus,
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "./health.ts";
 import {
-  allowedServiceTargets,
+  allowedServiceCandidates,
+  selectAvailableCatalogTargetsWithDetails,
+  type RoutedService,
   type ServiceTarget,
 } from "./routing.ts";
 import {
@@ -210,6 +213,12 @@ async function fetchServiceModels(
         await scheduleHealthUpdate(
           context,
           recordServiceFailure(env, service.id, requestId, "catalog"),
+        );
+      }
+      if (isKeyHealthFailureStatus(result.response.status)) {
+        await scheduleHealthUpdate(
+          context,
+          recordKeyFailure(env, service.id, key.id, requestId, "catalog"),
         );
       }
       return {
@@ -455,33 +464,31 @@ async function collectModels(
   request: Request,
   env: Env,
   config: GatewayConfig,
-  configuredTargets: ServiceTarget[],
+  configuredTargets: RoutedService[],
   codexFormat: boolean,
   requestId: string,
   context?: HealthExecutionContext,
   requestLog?: RequestLogContext,
 ): Promise<ModelsCollectionResult> {
-  const health = await mapWithConcurrency(
+  const selection = await selectAvailableCatalogTargetsWithDetails(
+    env,
     configuredTargets,
-    MODEL_CATALOG_CONCURRENCY,
-    async (target) => ({
-      ...target,
-      availability: await getServiceAvailability(env, target.service.id, "catalog"),
-    }),
   );
-  const available = health
-    .filter((entry) => entry.availability.available)
-    .map(({ service, key }) => ({ service, key }));
+  const available = selection.targets;
   const routing = {
     checked_available_services: available.map((entry) => entry.service.id),
-    service_checks: health.map((entry) => ({
-      service_id: entry.service.id,
-      key_id: entry.key.id,
-      ...entry.availability,
+    selected_keys: available.map(({ service, key }) => ({
+      service_id: service.id,
+      key_id: key.id,
     })),
+    service_checks: selection.checks,
+    key_checks: selection.keyChecks,
   };
   requestLog?.mergeSection("routing", routing);
-  if (health.some((entry) => entry.availability.reason === "health_read_failed")) {
+  if (
+    selection.checks.some((entry) => entry.reason === "health_read_failed") ||
+    selection.keyChecks.some((entry) => entry.reason === "health_read_failed")
+  ) {
     requestLog?.warn();
   }
   if (available.length === 0) {
@@ -558,7 +565,7 @@ export async function handleModels(
   context?: HealthExecutionContext,
   requestLog?: RequestLogContext,
 ): Promise<Response> {
-  const configuredTargets = allowedServiceTargets(config, client);
+  const configuredTargets = allowedServiceCandidates(config, client);
   requestLog?.registerSensitiveValues([
     client.api_key,
     ...upstreamApiKeyValues(config),
@@ -568,10 +575,6 @@ export async function handleModels(
   requestLog?.set({
     routing: {
       candidate_services: configuredTargets.map(({ service }) => service.id),
-      selected_keys: configuredTargets.map(({ service, key }) => ({
-        service_id: service.id,
-        key_id: key.id,
-      })),
     },
   });
   requestLog?.mergeSection("catalog", {

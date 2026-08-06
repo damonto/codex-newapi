@@ -34,6 +34,8 @@ test("parseConfig normalizes and validates a complete configuration", () => {
   const config = parseConfig(validConfig());
   assert.equal(config.services[0].base_url, "https://primary.example/v1");
   assert.equal(config.services[0].disabled, false);
+  assert.equal(config.services[0].supports_websocket, false);
+  assert.equal(config.services[0].supports_web_search, false);
   assert.deepEqual(config.services[0].keys, [
     {
       id: "primary-key",
@@ -49,6 +51,29 @@ test("parseConfig normalizes and validates a complete configuration", () => {
     model: "review-model",
     services: ["primary"],
   });
+});
+
+test("parseConfig accepts explicit service capability flags", () => {
+  const input = validConfig();
+  input.services[0].supports_websocket = true;
+  input.services[0].supports_web_search = false;
+
+  const config = parseConfig(input);
+  assert.equal(config.services[0].supports_websocket, true);
+  assert.equal(config.services[0].supports_web_search, false);
+});
+
+test("parseConfig rejects non-boolean service capability flags", () => {
+  for (const field of ["supports_websocket", "supports_web_search"]) {
+    const input = validConfig();
+    input.services[0][field] = "true";
+    assert.throws(
+      () => parseConfig(input),
+      (error) =>
+        error instanceof ConfigError &&
+        error.message === `services[0].${field} must be a boolean`,
+    );
+  }
 });
 
 test("parseConfig accepts multiple service keys in configuration order", () => {

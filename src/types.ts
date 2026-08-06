@@ -17,6 +17,8 @@ export interface ServiceConfig {
   disabled: boolean;
   priority: number;
   models: string[];
+  supports_websocket: boolean;
+  supports_web_search: boolean;
   retry?: ServiceRetryConfig;
 }
 
