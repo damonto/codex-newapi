@@ -21,7 +21,7 @@
         "required": [
           "id",
           "base_url",
-          "api_key",
+          "keys",
           "disabled",
           "priority",
           "models"
@@ -37,9 +37,36 @@
             "format": "uri",
             "pattern": "^https?://"
           },
-          "api_key": {
-            "type": "string",
-            "minLength": 1
+          "keys": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "api_key",
+                "disabled",
+                "priority"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9._-]+$"
+                },
+                "api_key": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "disabled": {
+                  "type": "boolean"
+                },
+                "priority": {
+                  "type": "integer"
+                }
+              }
+            }
           },
           "disabled": {
             "type": "boolean"

@@ -2,6 +2,7 @@ import type {
   ClientApiKeyConfig,
   GatewayConfig,
   ModelRouteConfig,
+  ServiceApiKeyConfig,
   ServiceConfig,
   ServiceRetryConfig,
 } from "./types.ts";
@@ -21,11 +22,17 @@ const ROOT_FIELDS = new Set([
 const SERVICE_FIELDS = new Set([
   "id",
   "base_url",
-  "api_key",
+  "keys",
   "disabled",
   "priority",
   "models",
   "retry",
+]);
+const SERVICE_API_KEY_FIELDS = new Set([
+  "id",
+  "api_key",
+  "disabled",
+  "priority",
 ]);
 const API_KEY_FIELDS = new Set(["api_key", "services"]);
 const MODEL_ROUTE_FIELDS = new Set(["model", "services"]);
@@ -163,21 +170,53 @@ function validateBaseUrl(value: string, path: string): string {
   return value.replace(/\/+$/, "");
 }
 
+function validateId(value: unknown, path: string): string {
+  const id = requiredString(value, path);
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) {
+    throw new ConfigError(`${path} contains unsupported characters`);
+  }
+  return id;
+}
+
+function parseServiceApiKey(
+  value: unknown,
+  serviceIndex: number,
+  keyIndex: number,
+): ServiceApiKeyConfig {
+  const path = `services[${serviceIndex}].keys[${keyIndex}]`;
+  if (!isRecord(value)) {
+    throw new ConfigError(`${path} must be an object`);
+  }
+  rejectUnknownFields(value, SERVICE_API_KEY_FIELDS, path);
+  return {
+    id: validateId(value.id, `${path}.id`),
+    api_key: requiredString(value.api_key, `${path}.api_key`),
+    disabled: requiredBoolean(value.disabled, `${path}.disabled`),
+    priority: requiredInteger(value.priority, `${path}.priority`),
+  };
+}
+
 function parseService(value: unknown, index: number): ServiceConfig {
   const path = `services[${index}]`;
   if (!isRecord(value)) {
     throw new ConfigError(`${path} must be an object`);
   }
   rejectUnknownFields(value, SERVICE_FIELDS, path);
-  const id = requiredString(value.id, `${path}.id`);
-  if (!/^[A-Za-z0-9._-]+$/.test(id)) {
-    throw new ConfigError(`${path}.id contains unsupported characters`);
+  const id = validateId(value.id, `${path}.id`);
+  if (!Array.isArray(value.keys) || value.keys.length === 0) {
+    throw new ConfigError(`${path}.keys must be a non-empty array`);
+  }
+  const keys = value.keys.map((entry, keyIndex) =>
+    parseServiceApiKey(entry, index, keyIndex)
+  );
+  if (new Set(keys.map((entry) => entry.id)).size !== keys.length) {
+    throw new ConfigError(`${path}.keys.id values must be unique`);
   }
   const retry = parseRetry(value.retry, `${path}.retry`);
   return {
     id,
     base_url: validateBaseUrl(requiredString(value.base_url, `${path}.base_url`), `${path}.base_url`),
-    api_key: requiredString(value.api_key, `${path}.api_key`),
+    keys,
     disabled: requiredBoolean(value.disabled, `${path}.disabled`),
     priority: requiredInteger(value.priority, `${path}.priority`),
     models: stringArray(value.models, `${path}.models`),

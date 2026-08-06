@@ -3,10 +3,17 @@ export interface ServiceRetryConfig {
   delays_ms: number[];
 }
 
+export interface ServiceApiKeyConfig {
+  id: string;
+  api_key: string;
+  disabled: boolean;
+  priority: number;
+}
+
 export interface ServiceConfig {
   id: string;
   base_url: string;
-  api_key: string;
+  keys: ServiceApiKeyConfig[];
   disabled: boolean;
   priority: number;
   models: string[];

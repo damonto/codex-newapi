@@ -3,14 +3,23 @@ import test from "node:test";
 
 import { parseConfig } from "../src/config.ts";
 import { FAILURE_THRESHOLD, ServiceHealthState } from "../src/health.ts";
-import { resolveModelRoute, selectAvailableService } from "../src/routing.ts";
+import {
+  resolveModelRoute,
+  selectAvailableService,
+  selectServiceApiKey,
+} from "../src/routing.ts";
 
 const config = parseConfig({
   services: [
     {
       id: "secondary",
       base_url: "https://secondary.example/v1",
-      api_key: "two",
+      keys: [{
+        id: "secondary-key",
+        api_key: "two",
+        disabled: false,
+        priority: 10,
+      }],
       disabled: false,
       priority: 10,
       models: ["grok-4.5", "review-model"],
@@ -18,7 +27,20 @@ const config = parseConfig({
     {
       id: "primary",
       base_url: "https://primary.example/v1",
-      api_key: "one",
+      keys: [
+        {
+          id: "primary-backup",
+          api_key: "one-backup",
+          disabled: false,
+          priority: 10,
+        },
+        {
+          id: "primary-key",
+          api_key: "one",
+          disabled: false,
+          priority: 100,
+        },
+      ],
       disabled: false,
       priority: 100,
       models: ["grok-4.5", "review-model"],
@@ -32,11 +54,37 @@ const config = parseConfig({
 });
 const client = config.api_keys[0];
 
+test("service keys are selected by priority", () => {
+  assert.equal(selectServiceApiKey(config.services[1]).id, "primary-key");
+});
+
+test("disabled service keys are skipped", () => {
+  const service = {
+    ...config.services[1],
+    keys: config.services[1].keys.map((key) => ({
+      ...key,
+      disabled: key.id === "primary-key",
+    })),
+  };
+  assert.equal(selectServiceApiKey(service).id, "primary-backup");
+});
+
+test("equal service key priorities preserve configuration order", () => {
+  const service = {
+    ...config.services[1],
+    keys: config.services[1].keys.map((key) => ({ ...key, priority: 50 })),
+  };
+  assert.equal(selectServiceApiKey(service).id, "primary-backup");
+});
+
 test("unconstrained routes resolve globally and services remain priority ordered", () => {
   const route = resolveModelRoute(config, client, "gpt-5.6-sol");
   assert.equal(route.upstreamModel, "grok-4.5");
   assert.equal(route.routeApplied, true);
-  assert.deepEqual(route.services.map((service) => service.id), ["primary", "secondary"]);
+  assert.deepEqual(
+    route.targets.map(({ service, key }) => [service.id, key.id]),
+    [["primary", "primary-key"], ["secondary", "secondary-key"]],
+  );
 });
 
 test("an unconfigured upstream model is not marked as a route", () => {
@@ -48,7 +96,7 @@ test("an unconfigured upstream model is not marked as a route", () => {
 test("route service constraints override global service priority", () => {
   const route = resolveModelRoute(config, client, "codex-auto-review");
   assert.equal(route.upstreamModel, "review-model");
-  assert.deepEqual(route.services.map((service) => service.id), ["secondary"]);
+  assert.deepEqual(route.targets.map(({ service }) => service.id), ["secondary"]);
 });
 
 test("route service constraints are intersected with client service access", () => {
@@ -57,7 +105,7 @@ test("route service constraints are intersected with client service access", () 
     { api_key: "limited", services: ["primary"] },
     "codex-auto-review",
   );
-  assert.deepEqual(route.services, []);
+  assert.deepEqual(route.targets, []);
 });
 
 test("a route can constrain a real upstream model name", () => {
@@ -74,7 +122,7 @@ test("a route can constrain a real upstream model name", () => {
   );
   assert.equal(route.upstreamModel, "grok-4.5");
   assert.equal(route.routeApplied, true);
-  assert.deepEqual(route.services.map((service) => service.id), ["secondary"]);
+  assert.deepEqual(route.targets.map(({ service }) => service.id), ["secondary"]);
 });
 
 test("disabled services are excluded before priority and health selection", async () => {
@@ -86,7 +134,7 @@ test("disabled services are excluded before priority and health selection", asyn
     })),
   };
   const route = resolveModelRoute(disabledConfig, client, "gpt-5.6-sol");
-  assert.deepEqual(route.services.map((service) => service.id), ["secondary"]);
+  assert.deepEqual(route.targets.map(({ service }) => service.id), ["secondary"]);
 
   let healthChecks = 0;
   const selected = await selectAvailableService(
@@ -115,7 +163,21 @@ test("a disabled route-constrained service is unavailable", () => {
     })),
   };
   const route = resolveModelRoute(disabledConfig, client, "codex-auto-review");
-  assert.deepEqual(route.services, []);
+  assert.deepEqual(route.targets, []);
+});
+
+test("a service without enabled keys is excluded from routing", () => {
+  const noPrimaryKeys = {
+    ...config,
+    services: config.services.map((service) => ({
+      ...service,
+      keys: service.id === "primary"
+        ? service.keys.map((key) => ({ ...key, disabled: true }))
+        : service.keys,
+    })),
+  };
+  const route = resolveModelRoute(noPrimaryKeys, client, "gpt-5.6-sol");
+  assert.deepEqual(route.targets.map(({ service }) => service.id), ["secondary"]);
 });
 
 test("a cooling primary service is skipped for the next priority", async () => {
@@ -146,7 +208,12 @@ test("a model route requires the real upstream model in the service list", () =>
           {
             id: "alias-only",
             base_url: "https://alias.example/v1",
-            api_key: "alias-key",
+            keys: [{
+              id: "alias-key",
+              api_key: "alias-key",
+              disabled: false,
+              priority: 1,
+            }],
             disabled: false,
             priority: 1,
             models: ["gpt-5.6-sol", "review-model"],

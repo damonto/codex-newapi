@@ -4,6 +4,7 @@ import {
   mapWithConcurrency,
   SERVICE_FAN_OUT_CONCURRENCY,
 } from "./concurrency.ts";
+import { upstreamApiKeyValues } from "./credentials.ts";
 import {
   forwardRequestHeaders,
   jsonResponse,
@@ -19,7 +20,10 @@ import {
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "./health.ts";
-import { allowedServices } from "./routing.ts";
+import {
+  allowedServiceTargets,
+  type ServiceTarget,
+} from "./routing.ts";
 import {
   elapsedMs,
   errorMessage,
@@ -168,13 +172,14 @@ async function fetchCatalogResponse(
 async function fetchServiceModels(
   request: Request,
   env: Env,
-  service: ServiceConfig,
+  target: ServiceTarget,
   requestId: string,
   context?: HealthExecutionContext,
   requestLog?: RequestLogContext,
 ): Promise<ServiceModelsResult> {
+  const { service, key } = target;
   const incomingUrl = new URL(request.url);
-  const headers = forwardRequestHeaders(request, service.api_key);
+  const headers = forwardRequestHeaders(request, key.api_key);
   const startedAt = performance.now();
 
   try {
@@ -190,6 +195,7 @@ async function fetchServiceModels(
     if (!result.response.ok) {
       const upstream = {
         service_id: service.id,
+        key_id: key.id,
         outcome: "http_error",
         duration_ms: durationMs,
         ...upstreamErrorStatusFields(result.response),
@@ -218,6 +224,7 @@ async function fetchServiceModels(
     if (!models) {
       const upstream = {
         service_id: service.id,
+        key_id: key.id,
         outcome: "invalid_response",
         duration_ms: durationMs,
         ...upstreamErrorStatusFields(result.response),
@@ -241,6 +248,7 @@ async function fetchServiceModels(
   } catch (error) {
     const upstream = {
       service_id: service.id,
+      key_id: key.id,
       outcome: "exception",
       error: errorMessage(error),
       duration_ms: elapsedMs(startedAt),
@@ -447,35 +455,34 @@ async function collectModels(
   request: Request,
   env: Env,
   config: GatewayConfig,
-  configuredServices: ServiceConfig[],
+  configuredTargets: ServiceTarget[],
   codexFormat: boolean,
   requestId: string,
   context?: HealthExecutionContext,
   requestLog?: RequestLogContext,
 ): Promise<ModelsCollectionResult> {
   const health = await mapWithConcurrency(
-    configuredServices,
+    configuredTargets,
     MODEL_CATALOG_CONCURRENCY,
-    async (service) => ({
-      service,
-      availability: await getServiceAvailability(env, service.id, "catalog"),
+    async (target) => ({
+      ...target,
+      availability: await getServiceAvailability(env, target.service.id, "catalog"),
     }),
   );
   const available = health
     .filter((entry) => entry.availability.available)
-    .map((entry) => entry.service);
+    .map(({ service, key }) => ({ service, key }));
   const routing = {
-    candidate_services: configuredServices.map((service) => service.id),
-    checked_available_services: available.map((service) => service.id),
+    checked_available_services: available.map((entry) => entry.service.id),
     service_checks: health.map((entry) => ({
       service_id: entry.service.id,
+      key_id: entry.key.id,
       ...entry.availability,
     })),
   };
+  requestLog?.mergeSection("routing", routing);
   if (health.some((entry) => entry.availability.reason === "health_read_failed")) {
-    requestLog?.warn({ routing });
-  } else {
-    requestLog?.set({ routing });
+    requestLog?.warn();
   }
   if (available.length === 0) {
     requestLog?.warn({ outcome: "service_cooling_down" });
@@ -490,10 +497,10 @@ async function collectModels(
   const results = await mapWithConcurrency(
     available,
     MODEL_CATALOG_CONCURRENCY,
-    (service) => fetchServiceModels(
+    (target) => fetchServiceModels(
       request,
       env,
-      service,
+      target,
       requestId,
       context,
       requestLog,
@@ -551,16 +558,20 @@ export async function handleModels(
   context?: HealthExecutionContext,
   requestLog?: RequestLogContext,
 ): Promise<Response> {
-  const configuredServices = allowedServices(config, client);
+  const configuredTargets = allowedServiceTargets(config, client);
   requestLog?.registerSensitiveValues([
-    ...configuredServices.map((service) => service.api_key),
     client.api_key,
+    ...upstreamApiKeyValues(config),
   ]);
   const codexFormat = isCodexUserAgent(request);
   const ttlMs = cacheTtlMs(env);
   requestLog?.set({
     routing: {
-      candidate_services: configuredServices.map((service) => service.id),
+      candidate_services: configuredTargets.map(({ service }) => service.id),
+      selected_keys: configuredTargets.map(({ service, key }) => ({
+        service_id: service.id,
+        key_id: key.id,
+      })),
     },
   });
   requestLog?.mergeSection("catalog", {
@@ -582,7 +593,7 @@ export async function handleModels(
       request,
       env,
       config,
-      configuredServices,
+      configuredTargets,
       codexFormat,
       requestId,
       context,

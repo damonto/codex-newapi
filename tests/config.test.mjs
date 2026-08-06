@@ -9,7 +9,14 @@ function validConfig() {
       {
         id: "primary",
         base_url: "https://primary.example/v1/",
-        api_key: "upstream-key",
+        keys: [
+          {
+            id: "primary-key",
+            api_key: "upstream-key",
+            disabled: false,
+            priority: 100,
+          },
+        ],
         disabled: false,
         priority: 100,
         models: ["grok-4.5", "review-model"],
@@ -27,6 +34,14 @@ test("parseConfig normalizes and validates a complete configuration", () => {
   const config = parseConfig(validConfig());
   assert.equal(config.services[0].base_url, "https://primary.example/v1");
   assert.equal(config.services[0].disabled, false);
+  assert.deepEqual(config.services[0].keys, [
+    {
+      id: "primary-key",
+      api_key: "upstream-key",
+      disabled: false,
+      priority: 100,
+    },
+  ]);
   assert.equal(config.services[0].retry, undefined);
   assert.equal(Object.hasOwn(config.services[0], "retry"), false);
   assert.deepEqual(config.model_routes["gpt-5.6-sol"], { model: "grok-4.5" });
@@ -34,6 +49,90 @@ test("parseConfig normalizes and validates a complete configuration", () => {
     model: "review-model",
     services: ["primary"],
   });
+});
+
+test("parseConfig accepts multiple service keys in configuration order", () => {
+  const input = validConfig();
+  input.services[0].keys.push({
+    id: "backup-key",
+    api_key: "backup-upstream-key",
+    disabled: true,
+    priority: 50,
+  });
+
+  const config = parseConfig(input);
+  assert.deepEqual(
+    config.services[0].keys.map((key) => key.id),
+    ["primary-key", "backup-key"],
+  );
+});
+
+test("parseConfig requires a non-empty service keys array", () => {
+  for (const keys of [undefined, []]) {
+    const input = validConfig();
+    if (keys === undefined) {
+      delete input.services[0].keys;
+    } else {
+      input.services[0].keys = keys;
+    }
+    assert.throws(
+      () => parseConfig(input),
+      (error) =>
+        error instanceof ConfigError &&
+        error.message === "services[0].keys must be a non-empty array",
+    );
+  }
+});
+
+test("parseConfig validates service key fields and identifiers", () => {
+  const cases = [
+    ["services[0].keys[0].id contains unsupported characters", (key) => {
+      key.id = "bad key";
+    }],
+    ["services[0].keys[0].api_key must be a non-empty string", (key) => {
+      key.api_key = "";
+    }],
+    ["services[0].keys[0].disabled must be a boolean", (key) => {
+      key.disabled = "false";
+    }],
+    ["services[0].keys[0].priority must be an integer", (key) => {
+      key.priority = 1.5;
+    }],
+  ];
+
+  for (const [message, mutate] of cases) {
+    const input = validConfig();
+    mutate(input.services[0].keys[0]);
+    assert.throws(
+      () => parseConfig(input),
+      (error) => error instanceof ConfigError && error.message === message,
+    );
+  }
+});
+
+test("parseConfig requires service key ids to be unique within a service", () => {
+  const input = validConfig();
+  input.services[0].keys.push({
+    ...input.services[0].keys[0],
+    api_key: "another-upstream-key",
+  });
+  assert.throws(
+    () => parseConfig(input),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message === "services[0].keys.id values must be unique",
+  );
+});
+
+test("parseConfig rejects the removed service api_key field", () => {
+  const input = validConfig();
+  input.services[0].api_key = "legacy-upstream-key";
+  assert.throws(
+    () => parseConfig(input),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message === "services[0].api_key is not supported",
+  );
 });
 
 test("parseConfig allows codex-auto-review as the configured upstream model", () => {
@@ -183,7 +282,12 @@ test("parseConfig rejects unknown or incompatible route services", () => {
   unsupported.services.push({
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    api_key: "secondary-key",
+    keys: [{
+      id: "secondary-key",
+      api_key: "secondary-key",
+      disabled: false,
+      priority: 50,
+    }],
     disabled: false,
     priority: 50,
     models: ["review-model"],
@@ -226,6 +330,9 @@ test("parseConfig rejects fields that are not declared by the schema", () => {
         delays_ms: [250],
         extra: true,
       };
+    }],
+    ["services[0].keys[0].extra is not supported", (input) => {
+      input.services[0].keys[0].extra = true;
     }],
     ["api_keys[0].extra is not supported", (input) => {
       input.api_keys[0].extra = true;

@@ -12,7 +12,20 @@ function gatewayConfig() {
       {
         id: "primary",
         base_url: "https://primary.example/v1",
-        api_key: "upstream-key",
+        keys: [
+          {
+            id: "primary-key",
+            api_key: "upstream-key",
+            disabled: false,
+            priority: 100,
+          },
+          {
+            id: "backup-key",
+            api_key: "upstream-backup-key",
+            disabled: true,
+            priority: 50,
+          },
+        ],
         disabled: false,
         priority: 100,
         models: ["grok-4.5", "review-model"],
@@ -322,10 +335,14 @@ test("gateway logs correlate a request without logging credentials or body conte
   assert.deepEqual(entry.routing.candidate_services, ["primary"]);
   assert.deepEqual(entry.routing.checked_available_services, ["primary"]);
   assert.equal(entry.routing.selected_service, "primary");
+  assert.equal(entry.routing.selected_key_id, "primary-key");
   assert.equal(entry.upstream.service_id, "primary");
+  assert.equal(entry.upstream.key_id, "primary-key");
   assert.equal(entry.upstream.status, 200);
   assert.equal(entry.upstream.attempts.length, 1);
   assert(!captured.lines.some((line) => line.includes("client-key")));
+  assert(!captured.lines.some((line) => line.includes("upstream-key")));
+  assert(!captured.lines.some((line) => line.includes("upstream-backup-key")));
   assert(!captured.lines.some((line) => line.includes("secret-request-body")));
 });
 
@@ -516,7 +533,11 @@ test("model catalog fan-out is summarized in one request log", async () => {
   const [entry] = captured.entries;
   assert.equal(entry.event, "request.summary");
   assert.deepEqual(entry.routing.candidate_services, ["primary"]);
+  assert.deepEqual(entry.routing.selected_keys, [
+    { service_id: "primary", key_id: "primary-key" },
+  ]);
   assert.deepEqual(entry.routing.checked_available_services, ["primary"]);
+  assert.equal(entry.routing.service_checks[0].key_id, "primary-key");
   assert.equal(entry.catalog.cache, "miss");
   assert.equal(Object.hasOwn(entry.catalog, "upstream_errors"), false);
   assert.equal(Object.hasOwn(entry.catalog, "returned_model_count"), false);
@@ -529,7 +550,12 @@ test("partial model catalog failures remain visible at warn level", async () => 
   config.services.push({
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    api_key: "secondary-key",
+    keys: [{
+      id: "secondary-key",
+      api_key: "secondary-key",
+      disabled: false,
+      priority: 50,
+    }],
     disabled: false,
     priority: 50,
     models: ["grok-4.5"],
@@ -575,6 +601,7 @@ test("partial model catalog failures remain visible at warn level", async () => 
   assert.equal(entry.event, "request.summary");
   assert.equal(entry.outcome, "partial_success");
   assert.equal(entry.response_status, 200);
+  assert.equal(entry.catalog.upstream_errors[0].key_id, "primary-key");
   assert.deepEqual(entry.catalog.upstream_errors[0].error_json, {
     error: { code: "primary_unavailable" },
   });
@@ -588,7 +615,12 @@ test("model catalog logs JSON upstream errors within one request budget", async 
     config.services.push({
       id: `service-${index}`,
       base_url: `https://service-${index}.example/v1`,
-      api_key: `upstream-${index}`,
+      keys: [{
+        id: `service-key-${index}`,
+        api_key: `upstream-${index}`,
+        disabled: false,
+        priority: 100 - index,
+      }],
       disabled: false,
       priority: 100 - index,
       models: ["grok-4.5"],
@@ -749,7 +781,12 @@ test("disabled services are skipped for inference and model aggregation", async 
   config.services.push({
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    api_key: "secondary-key",
+    keys: [{
+      id: "secondary-key",
+      api_key: "secondary-key",
+      disabled: false,
+      priority: 50,
+    }],
     disabled: false,
     priority: 50,
     models: ["grok-4.5"],
@@ -812,7 +849,12 @@ test("an upstream error is returned without retrying another service", async () 
   config.services.push({
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    api_key: "secondary-key",
+    keys: [{
+      id: "secondary-key",
+      api_key: "secondary-key",
+      disabled: false,
+      priority: 50,
+    }],
     disabled: false,
     priority: 50,
     models: ["grok-4.5"],
@@ -980,7 +1022,12 @@ test("an authenticated client can list and clear health only for allowed service
   config.services.push({
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    api_key: "secondary-key",
+    keys: [{
+      id: "secondary-key",
+      api_key: "secondary-key",
+      disabled: false,
+      priority: 50,
+    }],
     disabled: false,
     priority: 50,
     models: ["grok-4.5"],

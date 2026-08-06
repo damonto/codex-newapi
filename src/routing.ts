@@ -6,6 +6,7 @@ import type {
   ClientApiKeyConfig,
   GatewayConfig,
   ModelRouteConfig,
+  ServiceApiKeyConfig,
   ServiceConfig,
 } from "./types.ts";
 
@@ -13,7 +14,12 @@ export interface ModelRoute {
   requestedModel: string;
   upstreamModel: string;
   routeApplied: boolean;
-  services: ServiceConfig[];
+  targets: ServiceTarget[];
+}
+
+export interface ServiceTarget {
+  service: ServiceConfig;
+  key: ServiceApiKeyConfig;
 }
 
 export interface ServiceSelectionCheck extends ServiceAvailability {
@@ -21,8 +27,23 @@ export interface ServiceSelectionCheck extends ServiceAvailability {
 }
 
 export interface ServiceSelection {
-  service?: ServiceConfig;
+  target?: ServiceTarget;
   checks: ServiceSelectionCheck[];
+}
+
+export function selectServiceApiKey(
+  service: ServiceConfig,
+): ServiceApiKeyConfig | undefined {
+  let selected: ServiceApiKeyConfig | undefined;
+  for (const key of service.keys) {
+    if (
+      !key.disabled &&
+      (selected === undefined || key.priority > selected.priority)
+    ) {
+      selected = key;
+    }
+  }
+  return selected;
 }
 
 export function serviceSupportsModel(
@@ -36,13 +57,21 @@ function routeAllowsService(route: ModelRouteConfig | undefined, serviceId: stri
   return route?.services === undefined || route.services.includes(serviceId);
 }
 
-function sortByPriority(services: ServiceConfig[], config: GatewayConfig): ServiceConfig[] {
+function targetForService(service: ServiceConfig): ServiceTarget | undefined {
+  const key = selectServiceApiKey(service);
+  return key ? { service, key } : undefined;
+}
+
+function sortTargetsByPriority(
+  targets: ServiceTarget[],
+  config: GatewayConfig,
+): ServiceTarget[] {
   const order = new Map(config.services.map((service, index) => [service.id, index]));
-  return [...services].sort(
+  return [...targets].sort(
     (left, right) =>
-      right.priority - left.priority ||
-      (order.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
-        (order.get(right.id) ?? Number.MAX_SAFE_INTEGER),
+      right.service.priority - left.service.priority ||
+      (order.get(left.service.id) ?? Number.MAX_SAFE_INTEGER) -
+        (order.get(right.service.id) ?? Number.MAX_SAFE_INTEGER),
   );
 }
 
@@ -57,18 +86,23 @@ export function resolveModelRoute(
     ? config.model_routes[requestedModel]
     : undefined;
   const upstreamModel = configuredRoute?.model ?? requestedModel;
-  const services = config.services.filter(
-    (service) =>
-      !service.disabled &&
-      allowedServices.has(service.id) &&
-      routeAllowsService(configuredRoute, service.id) &&
-      serviceSupportsModel(service, upstreamModel),
-  );
+  const targets = config.services.flatMap((service) => {
+    if (
+      service.disabled ||
+      !allowedServices.has(service.id) ||
+      !routeAllowsService(configuredRoute, service.id) ||
+      !serviceSupportsModel(service, upstreamModel)
+    ) {
+      return [];
+    }
+    const target = targetForService(service);
+    return target ? [target] : [];
+  });
   return {
     requestedModel,
     upstreamModel,
     routeApplied,
-    services: sortByPriority(services, config),
+    targets: sortTargetsByPriority(targets, config),
   };
 }
 
@@ -77,11 +111,11 @@ export async function selectAvailableServiceWithDetails(
   route: ModelRoute,
 ): Promise<ServiceSelection> {
   const checks: ServiceSelectionCheck[] = [];
-  for (const service of route.services) {
-    const availability = await getServiceAvailability(env, service.id);
-    checks.push({ service_id: service.id, ...availability });
+  for (const target of route.targets) {
+    const availability = await getServiceAvailability(env, target.service.id);
+    checks.push({ service_id: target.service.id, ...availability });
     if (availability.available) {
-      return { service, checks };
+      return { target, checks };
     }
   }
   return { checks };
@@ -92,16 +126,20 @@ export async function selectAvailableService(
   route: ModelRoute,
   _requestId?: string,
 ): Promise<ServiceConfig | undefined> {
-  return (await selectAvailableServiceWithDetails(env, route)).service;
+  return (await selectAvailableServiceWithDetails(env, route)).target?.service;
 }
 
-export function allowedServices(
+export function allowedServiceTargets(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
-): ServiceConfig[] {
+): ServiceTarget[] {
   const allowed = new Set(client.services);
-  return sortByPriority(
-    config.services.filter((service) => !service.disabled && allowed.has(service.id)),
-    config,
-  );
+  const targets = config.services.flatMap((service) => {
+    if (service.disabled || !allowed.has(service.id)) {
+      return [];
+    }
+    const target = targetForService(service);
+    return target ? [target] : [];
+  });
+  return sortTargetsByPriority(targets, config);
 }

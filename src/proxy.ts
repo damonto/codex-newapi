@@ -15,6 +15,7 @@ import {
   discardBody,
   readBodyWithinLimit,
 } from "./body.ts";
+import { upstreamApiKeyValues } from "./credentials.ts";
 import {
   bounded,
   elapsedMs,
@@ -157,7 +158,10 @@ export async function handleInference(
   retryOptions: InferenceRetryOptions = {},
   requestLog?: RequestLogContext,
 ): Promise<Response> {
-  requestLog?.registerSensitiveValues([client.api_key]);
+  requestLog?.registerSensitiveValues([
+    client.api_key,
+    ...upstreamApiKeyValues(config),
+  ]);
   let rawBody: Uint8Array<ArrayBuffer>;
   try {
     rawBody = await readBodyWithinLimit(
@@ -194,7 +198,7 @@ export async function handleInference(
   }
 
   const route = resolveModelRoute(config, client, payload.model);
-  const candidateServices = route.services.map((service) => service.id);
+  const candidateServices = route.targets.map((target) => target.service.id);
   requestLog?.set({
     model: {
       requested: bounded(payload.model, 160),
@@ -203,32 +207,37 @@ export async function handleInference(
     },
     routing: { candidate_services: candidateServices },
   });
-  if (route.services.length === 0) {
+  if (route.targets.length === 0) {
     requestLog?.warn({ outcome: "model_not_found" });
     return openAiError(400, `Model ${payload.model} is not available for this API key`, "invalid_request_error", "model_not_found");
   }
   const selection = await selectAvailableServiceWithDetails(env, route);
-  const service = selection.service;
+  const target = selection.target;
   const routing = {
     candidate_services: candidateServices,
     checked_available_services: selection.checks
       .filter((check) => check.available)
       .map((check) => check.service_id),
     service_checks: selection.checks,
-    ...(service ? { selected_service: service.id } : {}),
+    ...(target
+      ? {
+        selected_service: target.service.id,
+        selected_key_id: target.key.id,
+      }
+      : {}),
   };
   if (selection.checks.some((check) => check.reason === "health_read_failed")) {
     requestLog?.warn({ routing });
   } else {
     requestLog?.set({ routing });
   }
-  if (!service) {
+  if (!target) {
     requestLog?.warn({ outcome: "service_cooling_down" });
     return openAiError(503, `No healthy service is currently available for model ${payload.model}`, "server_error", "service_cooling_down");
   }
+  const { service, key: selectedKey } = target;
 
-  requestLog?.registerSensitiveValues([service.api_key]);
-  const headers = forwardRequestHeaders(request, service.api_key);
+  const headers = forwardRequestHeaders(request, selectedKey.api_key);
   headers.delete("content-length");
   const modelRewritten = payload.model !== route.upstreamModel;
   if (modelRewritten) {
@@ -262,6 +271,7 @@ export async function handleInference(
       outcome: "upstream_unavailable",
       upstream: {
         service_id: service.id,
+        key_id: selectedKey.id,
         model: bounded(route.upstreamModel, 160),
         model_rewritten: modelRewritten,
         duration_ms: upstreamDurationMs,
@@ -280,6 +290,7 @@ export async function handleInference(
   if (requestLog) {
     const upstreamBase = {
       service_id: service.id,
+      key_id: selectedKey.id,
       model: bounded(route.upstreamModel, 160),
       model_rewritten: modelRewritten,
       duration_ms: upstreamDurationMs,

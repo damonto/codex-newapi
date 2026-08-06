@@ -8,6 +8,7 @@ Use several NewAPI services through one Cloudflare Workers endpoint. It works wi
 
 - Combines multiple NewAPI services behind one address.
 - Routes models by priority and controls access with client API keys.
+- Supports multiple manually selected upstream API keys per service.
 - Supports client-facing model routes with optional service constraints.
 - Supports Codex Image Gen through configured `gpt-image-2` services.
 - Can retry selected status codes with a separate policy for each service.
@@ -50,7 +51,20 @@ npm run deploy
     {
       "id": "primary",
       "base_url": "https://newapi.example.com/v1",
-      "api_key": "sk-upstream",
+      "keys": [
+        {
+          "id": "primary-key",
+          "api_key": "sk-upstream-primary",
+          "disabled": false,
+          "priority": 100
+        },
+        {
+          "id": "backup-key",
+          "api_key": "sk-upstream-backup",
+          "disabled": true,
+          "priority": 50
+        }
+      ],
       "disabled": false,
       "priority": 100,
       "models": ["grok-4.5", "gpt-image-2"],
@@ -79,11 +93,18 @@ npm run deploy
 ```
 
 - `services`: upstream services and the models they provide. Higher priority wins.
+- `services[].keys`: upstream credentials for one service. The highest-priority enabled key is selected; equal priorities preserve configuration order.
 - `api_keys`: keys used by your clients and the services each key may access.
 - `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services.
 - `retry`: optional status codes and delays. Each delay adds one retry; omitting this field disables retries.
 
 When a route omits `services`, all client-authorized services that list its upstream model are eligible. When `services` is present, it is intersected with the client API key's allowed services. Unconfigured model names are forwarded directly.
+
+Key switching is manual: change a key's `disabled` or `priority` value and upload the configuration again. Requests and configured retries never switch keys automatically. If the service is already in inference cooldown, clear it with `DELETE /health/{service_id}` after changing keys. Use `scope=catalog` to clear a catalog cooldown.
+
+Every service must declare a non-empty `keys` array, although all entries may be disabled to take that service out of routing. The former `services[].api_key` field is no longer accepted.
+
+Key IDs appear in structured logs. Use descriptive, non-sensitive labels and never copy credential values into `id`.
 
 To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through `model_routes`.
 

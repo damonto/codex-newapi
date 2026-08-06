@@ -11,7 +11,20 @@ function inferenceFixture(retry) {
   const service = {
     id: "primary",
     base_url: "https://primary.example/v1",
-    api_key: "service-secret-key",
+    keys: [
+      {
+        id: "primary-key",
+        api_key: "service-secret-key",
+        disabled: false,
+        priority: 100,
+      },
+      {
+        id: "backup-key",
+        api_key: "service-backup-key",
+        disabled: false,
+        priority: 50,
+      },
+    ],
     disabled: false,
     priority: 100,
     models: ["model"],
@@ -367,6 +380,57 @@ test("inference retries configured HTTP statuses with the same request", async (
     assert(requests.every((request) => request.body === expectedBody));
     assert.equal(fixture.calls.failure, 0);
     assert.equal(fixture.calls.success, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("inference uses the next configured key only after a manual configuration change", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.services[0].keys[0].disabled = true;
+  const originalFetch = globalThis.fetch;
+  let authorization;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    authorization = request.headers.get("authorization");
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await handleInference(
+      inferenceRequest(),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+    );
+    assert.equal(response.status, 200);
+    assert.equal(authorization, "Bearer service-backup-key");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("inference does not fall back to another key after an upstream response", async () => {
+  const fixture = inferenceFixture();
+  const originalFetch = globalThis.fetch;
+  const authorizations = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    authorizations.push(request.headers.get("authorization"));
+    return new Response(null, { status: 503 });
+  };
+
+  try {
+    const response = await handleInference(
+      inferenceRequest(),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "responses",
+    );
+    assert.equal(response.status, 503);
+    assert.deepEqual(authorizations, ["Bearer service-secret-key"]);
   } finally {
     globalThis.fetch = originalFetch;
   }

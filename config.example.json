@@ -4,7 +4,20 @@
     {
       "id": "newapi-primary",
       "base_url": "https://primary.example.com/v1",
-      "api_key": "sk-upstream-primary",
+      "keys": [
+        {
+          "id": "primary-key",
+          "api_key": "sk-upstream-primary",
+          "disabled": false,
+          "priority": 100
+        },
+        {
+          "id": "backup-key",
+          "api_key": "sk-upstream-primary-backup",
+          "disabled": true,
+          "priority": 50
+        }
+      ],
       "disabled": false,
       "priority": 100,
       "models": ["grok-4.5", "gpt-4.1", "gpt-image-2"],
@@ -16,7 +29,14 @@
     {
       "id": "newapi-secondary",
       "base_url": "https://secondary.example.com/v1",
-      "api_key": "sk-upstream-secondary",
+      "keys": [
+        {
+          "id": "default-key",
+          "api_key": "sk-upstream-secondary",
+          "disabled": false,
+          "priority": 100
+        }
+      ],
       "disabled": false,
       "priority": 50,
       "models": ["grok-4.5"],

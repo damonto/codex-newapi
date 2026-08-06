@@ -65,7 +65,20 @@ function modelConfig(serviceCount = 1) {
   const services = Array.from({ length: serviceCount }, (_, index) => ({
     id: `service-${index}`,
     base_url: `https://service-${index}.example/v1`,
-    api_key: `upstream-${index}`,
+    keys: [
+      {
+        id: `primary-key-${index}`,
+        api_key: `upstream-${index}`,
+        disabled: false,
+        priority: 100,
+      },
+      {
+        id: `backup-key-${index}`,
+        api_key: `upstream-backup-${index}`,
+        disabled: false,
+        priority: 50,
+      },
+    ],
     disabled: false,
     priority: serviceCount - index,
     models: ["model"],
@@ -205,6 +218,55 @@ test("model catalog fan-out is bounded", async () => {
     assert.equal(response.status, 200);
     assert.equal(calls, MODEL_CATALOG_CONCURRENCY * 2);
     assert.equal(maximumActive, MODEL_CATALOG_CONCURRENCY);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("model catalogs use one selected key per service", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  config.services[0].keys[0].disabled = true;
+  const client = config.api_keys[0];
+  const originalFetch = globalThis.fetch;
+  const authorizations = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    authorizations.push(request.headers.get("authorization"));
+    return Response.json({ data: [{ id: "model", object: "model" }] });
+  };
+  const { env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(modelRequest(), env, config, client, "test");
+    assert.equal(response.status, 200);
+    assert.deepEqual(authorizations, ["Bearer upstream-backup-0"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("model catalogs skip services without an enabled key", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig(2);
+  config.services[0].keys = config.services[0].keys.map((key) => ({
+    ...key,
+    disabled: true,
+  }));
+  const client = config.api_keys[0];
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    urls.push(request.url);
+    return Response.json({ data: [{ id: "model", object: "model" }] });
+  };
+  const { env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(modelRequest(), env, config, client, "test");
+    assert.equal(response.status, 200);
+    assert.deepEqual(urls, ["https://service-1.example/v1/models"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
