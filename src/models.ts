@@ -369,31 +369,14 @@ function cacheTtlMs(env: Env): number {
   return Math.min(configured, MAX_MODELS_CACHE_TTL_SECONDS) * 1000;
 }
 
-function fallbackHash(value: string): string {
-  let first = 2_166_136_261;
-  let second = 3_339_675_911;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    first = Math.imul(first ^ code, 16_777_619);
-    second = Math.imul(second ^ code, 2_246_822_519);
-  }
-  const firstHex = (first >>> 0).toString(16).padStart(8, "0");
-  const secondHex = (second >>> 0).toString(16).padStart(8, "0");
-  return `${firstHex}${secondHex}`;
-}
-
 async function hashText(value: string): Promise<string> {
-  try {
-    const digest = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(value),
-    );
-    return [...new Uint8Array(digest)]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-  } catch {
-    return fallbackHash(value);
-  }
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function requestHeaderVary(request: Request): string {
@@ -415,7 +398,7 @@ async function modelsCacheKey(
   const url = new URL(request.url);
   const serviceIds = [...client.services].sort().join(",");
   const vary = [
-    JSON.stringify(config) ?? "",
+    JSON.stringify(config),
     codexFormat ? "codex" : "standard",
     url.pathname === "/models" || url.pathname === "/v1/models" ? "models" : url.pathname,
     url.search,

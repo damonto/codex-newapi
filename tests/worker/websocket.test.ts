@@ -63,7 +63,7 @@ function gatewayConfig(): GatewayConfig {
       supports_web_search: false,
       models: ["upstream-model", "other-model"],
     }],
-    api_keys: [{ api_key: "client-secret", services: ["primary"] }],
+    api_keys: [{ id: "client", api_key: "client-secret", services: ["primary"] }],
     model_routes: {
       "client-model": { model: "upstream-model" },
     },
@@ -1146,7 +1146,11 @@ test("a later response.create reauthenticates the client against current configu
   await sendUpstream(upstream, JSON.stringify({ type: "response.completed" }));
   await completed;
 
-  config.api_keys = [{ api_key: "replacement-client", services: ["primary"] }];
+  config.api_keys = [{
+    id: "replacement-client",
+    api_key: "replacement-client",
+    services: ["primary"],
+  }];
   await putConfig(config);
 
   const authenticationError = nextMessage(socket);

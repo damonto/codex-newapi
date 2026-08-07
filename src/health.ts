@@ -207,7 +207,6 @@ export async function getServiceAvailability(
 export async function serviceIsAvailable(
   env: Env,
   serviceId: string,
-  _requestId?: string,
   scope: HealthScope = "inference",
 ): Promise<boolean> {
   return (await getServiceAvailability(env, serviceId, scope)).available;
@@ -241,7 +240,6 @@ export async function keyIsAvailable(
   env: Env,
   serviceId: string,
   keyId: string,
-  _requestId?: string,
   scope: HealthScope = "inference",
 ): Promise<boolean> {
   return (await getKeyAvailability(env, serviceId, keyId, scope)).available;
@@ -333,7 +331,6 @@ export async function recordKeyFailure(
 export async function clearServiceHealth(
   env: Env,
   serviceId: string,
-  _requestId?: string,
   scope: HealthScope = "inference",
 ): Promise<ServiceHealthSnapshot> {
   const snapshot = await healthStub(env, serviceId, scope).clear();
@@ -344,7 +341,6 @@ export async function clearKeyHealth(
   env: Env,
   serviceId: string,
   keyId: string,
-  _requestId?: string,
   scope: HealthScope = "inference",
 ): Promise<ServiceHealthSnapshot> {
   return keyHealthStub(env, serviceId, keyId, scope).clear();

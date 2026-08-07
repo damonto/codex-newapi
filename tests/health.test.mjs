@@ -127,12 +127,12 @@ test("catalog health is isolated from inference health", async () => {
   for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
     await recordServiceFailure(env, "service", "test", "catalog");
   }
-  assert.equal(await serviceIsAvailable(env, "service", "test", "inference"), true);
-  assert.equal(await serviceIsAvailable(env, "service", "test", "catalog"), false);
+  assert.equal(await serviceIsAvailable(env, "service", "inference"), true);
+  assert.equal(await serviceIsAvailable(env, "service", "catalog"), false);
 
-  await clearServiceHealth(env, "service", "test", "catalog");
-  assert.equal(await serviceIsAvailable(env, "service", "test", "catalog"), true);
-  assert.equal(await serviceIsAvailable(env, "service", "test", "inference"), true);
+  await clearServiceHealth(env, "service", "catalog");
+  assert.equal(await serviceIsAvailable(env, "service", "catalog"), true);
+  assert.equal(await serviceIsAvailable(env, "service", "inference"), true);
 });
 
 test("catalog key cooldown is isolated from inference key cooldown", async () => {
@@ -147,12 +147,12 @@ test("catalog key cooldown is isolated from inference key cooldown", async () =>
   };
 
   await recordKeyFailure(env, "service", "key", "test", "catalog");
-  assert.equal(await keyIsAvailable(env, "service", "key", "test", "inference"), true);
-  assert.equal(await keyIsAvailable(env, "service", "key", "test", "catalog"), false);
+  assert.equal(await keyIsAvailable(env, "service", "key", "inference"), true);
+  assert.equal(await keyIsAvailable(env, "service", "key", "catalog"), false);
 
-  await clearKeyHealth(env, "service", "key", "test", "catalog");
-  assert.equal(await keyIsAvailable(env, "service", "key", "test", "catalog"), true);
-  assert.equal(await keyIsAvailable(env, "service", "key", "test", "inference"), true);
+  await clearKeyHealth(env, "service", "key", "catalog");
+  assert.equal(await keyIsAvailable(env, "service", "key", "catalog"), true);
+  assert.equal(await keyIsAvailable(env, "service", "key", "inference"), true);
 });
 
 test("health listing preserves service and key configuration order", async () => {

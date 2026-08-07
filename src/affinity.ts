@@ -21,13 +21,13 @@ export interface SessionAffinityRecord {
   service_id: string;
   key_id: string;
   updated_at: number;
-  binding_id?: string;
-  created_at?: number;
-  generation?: number;
-  registry_name?: string;
-  session_digest?: string;
-  session_id?: string;
-  index_registered?: boolean;
+  binding_id: string;
+  created_at: number;
+  generation: number;
+  registry_name: string;
+  session_digest: string;
+  session_id: string;
+  index_registered: boolean;
 }
 
 export interface SessionAffinityResolution extends SessionAffinityRecord {

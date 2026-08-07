@@ -159,7 +159,6 @@ async function handleHealthClear(
   incomingUrl: URL,
   serviceId: string,
   keyId: string | undefined,
-  requestId: string,
   requestLog: RequestLogContext,
 ): Promise<Response> {
   const service = config.services.find((entry) => entry.id === serviceId);
@@ -200,8 +199,8 @@ async function handleHealthClear(
     return invalidHealthScope();
   }
   const snapshot = keyId === undefined
-    ? await clearServiceHealth(env, serviceId, requestId, scope)
-    : await clearKeyHealth(env, serviceId, keyId, requestId, scope);
+    ? await clearServiceHealth(env, serviceId, scope)
+    : await clearKeyHealth(env, serviceId, keyId, scope);
   requestLog.set({
     health: {
       action: "clear",
@@ -282,7 +281,6 @@ async function handleMatchedRoute(
         incomingUrl,
         matchedRoute.serviceId,
         matchedRoute.keyId,
-        requestId,
         requestLog,
       );
   }
@@ -296,7 +294,6 @@ async function handleMatchedRoute(
       config,
       client,
       requestId,
-      context,
       requestLog,
     );
   }
@@ -352,7 +349,7 @@ export default {
 
     let config;
     try {
-      config = await loadConfig(env, requestId, requestLog);
+      config = await loadConfig(env, requestLog);
     } catch (error) {
       const message = error instanceof ConfigError ? error.message : "configuration is unavailable";
       requestLog.error({
@@ -375,6 +372,7 @@ export default {
 
     requestLog.set({
       authentication: "accepted",
+      client_key_id: client.id,
       allowed_services: [...client.services],
     });
 

@@ -10,6 +10,7 @@ import {
   affinityObjectName,
   SESSION_AFFINITY_TTL_MS,
   type AffinityServiceCandidate,
+  type SessionAffinityResolution,
 } from "../../src/session-affinity.ts";
 
 const candidates: AffinityServiceCandidate[] = [
@@ -28,6 +29,28 @@ const candidates: AffinityServiceCandidate[] = [
   },
 ];
 
+function digest(): string {
+  return crypto.randomUUID().replaceAll("-", "").repeat(2);
+}
+
+function registration(sessionId: string) {
+  return {
+    registry_name: digest(),
+    session_digest: digest(),
+    session_id: sessionId,
+  };
+}
+
+function requireResolution(
+  resolution: SessionAffinityResolution | undefined,
+): SessionAffinityResolution {
+  expect(resolution).toBeDefined();
+  if (!resolution) {
+    throw new Error("expected session affinity resolution");
+  }
+  return resolution;
+}
+
 test("affinity object names isolate client credentials and sessions", async () => {
   const first = await affinityObjectName("client-secret-a", "session-a");
   const repeated = await affinityObjectName("client-secret-a", "session-a");
@@ -43,11 +66,14 @@ test("affinity object names isolate client credentials and sessions", async () =
 });
 
 test("session affinity survives eviction and keeps the original target", async () => {
-  const stub = env.SESSION_AFFINITY.getByName(`eviction-${crypto.randomUUID()}`);
+  const identity = registration("eviction-session");
+  const stub = env.SESSION_AFFINITY.getByName(
+    `${identity.registry_name}:${identity.session_digest}`,
+  );
   const created = await stub.resolve(candidates, {
     service_id: "second",
     key_id: "second-a",
-  });
+  }, identity);
   expect(created).toMatchObject({
     service_id: "second",
     key_id: "second-a",
@@ -58,7 +84,7 @@ test("session affinity survives eviction and keeps the original target", async (
   const hit = await stub.resolve(candidates, {
     service_id: "first",
     key_id: "first-a",
-  });
+  }, identity);
   expect(hit).toMatchObject({
     service_id: "second",
     key_id: "second-a",
@@ -67,10 +93,13 @@ test("session affinity survives eviction and keeps the original target", async (
 });
 
 test("concurrent first resolutions atomically converge on one binding", async () => {
-  const stub = env.SESSION_AFFINITY.getByName(`concurrent-${crypto.randomUUID()}`);
+  const identity = registration("concurrent-session");
+  const stub = env.SESSION_AFFINITY.getByName(
+    `${identity.registry_name}:${identity.session_digest}`,
+  );
   const [left, right] = await Promise.all([
-    stub.resolve(candidates, { service_id: "first", key_id: "first-a" }),
-    stub.resolve(candidates, { service_id: "second", key_id: "second-a" }),
+    stub.resolve(candidates, { service_id: "first", key_id: "first-a" }, identity),
+    stub.resolve(candidates, { service_id: "second", key_id: "second-a" }, identity),
   ]);
 
   expect(left).toBeDefined();
@@ -83,13 +112,16 @@ test("concurrent first resolutions atomically converge on one binding", async ()
 });
 
 test("a removed target is rebound to the preferred current candidate", async () => {
-  const stub = env.SESSION_AFFINITY.getByName(`rebound-${crypto.randomUUID()}`);
-  await stub.resolve(candidates, { service_id: "first", key_id: "first-b" });
+  const identity = registration("rebound-session");
+  const stub = env.SESSION_AFFINITY.getByName(
+    `${identity.registry_name}:${identity.session_digest}`,
+  );
+  await stub.resolve(candidates, { service_id: "first", key_id: "first-b" }, identity);
 
   const rebound = await stub.resolve([candidates[1]], {
     service_id: "second",
     key_id: "second-a",
-  });
+  }, identity);
   expect(rebound).toMatchObject({
     service_id: "second",
     key_id: "second-a",
@@ -103,7 +135,7 @@ test("new managed bindings are indexed and conditionally cleared", async () => {
   const stub = env.SESSION_AFFINITY.getByName(
     `${registryName}:${sessionDigest}`,
   );
-  const created = await stub.resolve(
+  const created = requireResolution(await stub.resolve(
     candidates,
     { service_id: "first", key_id: "first-a" },
     {
@@ -111,25 +143,28 @@ test("new managed bindings are indexed and conditionally cleared", async () => {
       session_digest: sessionDigest,
       session_id: "managed-session",
     },
-  );
-  expect(created?.binding_id).toEqual(expect.any(String));
-  expect(created?.created_at).toEqual(expect.any(Number));
-  expect(created?.generation).toBe(1);
+  ));
+  expect(created.binding_id).toEqual(expect.any(String));
+  expect(created.created_at).toEqual(expect.any(Number));
+  expect(created.generation).toBe(1);
   expect(await env.SESSION_AFFINITY_INDEX.getByName(registryName).get(sessionDigest))
     .toMatchObject({
       session_id: "managed-session",
-      binding_id: created?.binding_id,
+      binding_id: created.binding_id,
     });
   expect(await stub.getStatus()).toMatchObject({ index_registered: true });
 
-  expect(await stub.clearIfBindingId("wrong-binding")).toBe(false);
+  expect(await stub.clearIfBindingId("wrong-binding", created.generation)).toBe(false);
   expect(await stub.getStatus()).not.toBeNull();
-  expect(await stub.clearIfBindingId(created?.binding_id ?? "")).toBe(true);
+  expect(await stub.clearIfBindingId(
+    created.binding_id,
+    created.generation,
+  )).toBe(true);
   expect(await stub.getStatus()).toBeNull();
   expect(await env.SESSION_AFFINITY_INDEX.getByName(registryName).remove(
     sessionDigest,
-    created?.binding_id ?? "",
-    created?.generation,
+    created.binding_id,
+    created.generation,
   )).toBe(true);
   expect(await env.SESSION_AFFINITY_INDEX.getByName(registryName).get(sessionDigest))
     .toBeNull();
@@ -144,17 +179,17 @@ test("managed bindings can be cleared without an index entry", async () => {
     session_id: "unindexed-managed-session",
   };
   const stub = env.SESSION_AFFINITY.getByName(`${registryName}:${sessionDigest}`);
-  const created = await stub.resolve(
+  const created = requireResolution(await stub.resolve(
     candidates,
     { service_id: "first", key_id: "first-a" },
     registration,
-  );
+  ));
   const index = env.SESSION_AFFINITY_INDEX.getByName(registryName);
   await expect.poll(async () => await index.get(sessionDigest)).not.toBeNull();
   await index.remove(
     sessionDigest,
-    created?.binding_id ?? "",
-    created?.generation,
+    created.binding_id,
+    created.generation,
   );
 
   expect(await stub.clearManaged({
@@ -163,8 +198,8 @@ test("managed bindings can be cleared without an index entry", async () => {
   })).toBeNull();
   expect(await stub.getStatus()).not.toBeNull();
   expect(await stub.clearManaged(registration)).toEqual({
-    binding_id: created?.binding_id,
-    generation: created?.generation,
+    binding_id: created.binding_id,
+    generation: created.generation,
   });
   expect(await stub.getStatus()).toBeNull();
 });
@@ -180,7 +215,7 @@ test("managed rebinds rotate binding identity and protect the replacement", asyn
     session_digest: sessionDigest,
     session_id: "rebound-managed-session",
   };
-  const initial = await stub.resolve(
+  const initial = requireResolution(await stub.resolve(
     [{
       service_id: "lower",
       priority: 10,
@@ -188,8 +223,8 @@ test("managed rebinds rotate binding identity and protect the replacement", asyn
     }],
     { service_id: "lower", key_id: "lower-key" },
     registration,
-  );
-  const upgraded = await stub.resolve(
+  ));
+  const upgraded = requireResolution(await stub.resolve(
     [
       {
         service_id: "lower",
@@ -204,25 +239,28 @@ test("managed rebinds rotate binding identity and protect the replacement", asyn
     ],
     { service_id: "higher", key_id: "higher-key" },
     registration,
-  );
+  ));
 
-  expect(upgraded?.status).toBe("rebound");
-  expect(upgraded?.binding_id).not.toBe(initial?.binding_id);
-  expect(upgraded?.generation).toBeGreaterThan(initial?.generation ?? 0);
-  expect(upgraded?.created_at).toBeGreaterThanOrEqual(initial?.created_at ?? -1);
-  expect(await stub.clearIfBindingId(initial?.binding_id ?? "")).toBe(false);
+  expect(upgraded.status).toBe("rebound");
+  expect(upgraded.binding_id).not.toBe(initial.binding_id);
+  expect(upgraded.generation).toBeGreaterThan(initial.generation);
+  expect(upgraded.created_at).toBeGreaterThanOrEqual(initial.created_at);
+  expect(await stub.clearIfBindingId(
+    initial.binding_id,
+    initial.generation,
+  )).toBe(false);
   expect(await env.SESSION_AFFINITY_INDEX.getByName(registryName).remove(
     sessionDigest,
-    initial?.binding_id ?? "",
-    initial?.generation,
+    initial.binding_id,
+    initial.generation,
   )).toBe(false);
   expect(await stub.getStatus()).toMatchObject({
     service_id: "higher",
     key_id: "higher-key",
-    binding_id: upgraded?.binding_id,
+    binding_id: upgraded.binding_id,
   });
   expect(await env.SESSION_AFFINITY_INDEX.getByName(registryName).get(sessionDigest))
-    .toMatchObject({ binding_id: upgraded?.binding_id });
+    .toMatchObject({ binding_id: upgraded.binding_id });
 });
 
 test("a stale equal-timestamp index entry is replaced by a newer generation", async () => {
@@ -237,7 +275,7 @@ test("a stale equal-timestamp index entry is replaced by a newer generation", as
     generation: 5,
   });
   const stub = env.SESSION_AFFINITY.getByName(`${registryName}:${sessionDigest}`);
-  const created = await stub.resolve(
+  const created = requireResolution(await stub.resolve(
     candidates,
     { service_id: "first", key_id: "first-a" },
     {
@@ -245,13 +283,13 @@ test("a stale equal-timestamp index entry is replaced by a newer generation", as
       session_digest: sessionDigest,
       session_id: "generation-session",
     },
-  );
+  ));
 
   await expect.poll(async () => (await index.get(sessionDigest))?.generation).toBe(6);
   const status = await stub.getStatus();
   expect(status).toMatchObject({
-    binding_id: created?.binding_id,
-    created_at: created?.created_at,
+    binding_id: created.binding_id,
+    created_at: created.created_at,
     generation: 6,
     index_registered: true,
   });
@@ -261,8 +299,8 @@ test("a stale equal-timestamp index entry is replaced by a newer generation", as
     generation: 6,
   });
   expect(await stub.clearIfBindingId(
-    created?.binding_id ?? "",
-    created?.generation,
+    created.binding_id,
+    created.generation,
   )).toBe(false);
   expect(await stub.getStatus()).not.toBeNull();
 });
@@ -297,13 +335,16 @@ test("a managed affinity alarm removes its index entry", async () => {
 });
 
 test("the idle alarm deletes affinity after 30 days", async () => {
-  const stub = env.SESSION_AFFINITY.getByName(`alarm-${crypto.randomUUID()}`);
-  await stub.resolve(candidates, { service_id: "first", key_id: "first-a" });
+  const identity = registration("alarm-session");
+  const stub = env.SESSION_AFFINITY.getByName(
+    `${identity.registry_name}:${identity.session_digest}`,
+  );
+  await stub.resolve(candidates, { service_id: "first", key_id: "first-a" }, identity);
 
   await runInDurableObject(stub, async (_instance, state) => {
+    const record = await state.storage.get<Record<string, unknown>>("affinity");
     await state.storage.put("affinity", {
-      service_id: "first",
-      key_id: "first-a",
+      ...record,
       updated_at: Date.now() - SESSION_AFFINITY_TTL_MS - 1,
     });
     await state.storage.setAlarm(Date.now() + 60_000);
@@ -314,4 +355,65 @@ test("the idle alarm deletes affinity after 30 days", async () => {
   await runInDurableObject(stub, async (_instance, state) => {
     expect(await state.storage.get("affinity")).toBeUndefined();
   });
+});
+
+test("unsupported unmanaged affinity records do not participate in routing", async () => {
+  const identity = registration("unmanaged-session");
+  const stub = env.SESSION_AFFINITY.getByName(
+    `${identity.registry_name}:${identity.session_digest}`,
+  );
+  await runInDurableObject(stub, async (_instance, state) => {
+    await state.storage.put("affinity", {
+      service_id: "second",
+      key_id: "second-a",
+      updated_at: Date.now(),
+    });
+  });
+
+  const resolution = await stub.resolve(
+    candidates,
+    { service_id: "first", key_id: "first-a" },
+    identity,
+  );
+
+  expect(resolution).toMatchObject({
+    service_id: "first",
+    key_id: "first-a",
+    generation: 1,
+    status: "created",
+  });
+});
+
+test("unsupported generation-less managed records are replaced", async () => {
+  const identity = registration("generation-less-session");
+  const stub = env.SESSION_AFFINITY.getByName(
+    `${identity.registry_name}:${identity.session_digest}`,
+  );
+  await runInDurableObject(stub, async (_instance, state) => {
+    await state.storage.put("affinity", {
+      service_id: "second",
+      key_id: "second-a",
+      updated_at: Date.now(),
+      binding_id: "old-binding",
+      created_at: Date.now(),
+      registry_name: identity.registry_name,
+      session_digest: identity.session_digest,
+      session_id: identity.session_id,
+      index_registered: true,
+    });
+  });
+
+  const resolution = await stub.resolve(
+    candidates,
+    { service_id: "first", key_id: "first-a" },
+    identity,
+  );
+
+  expect(resolution).toMatchObject({
+    service_id: "first",
+    key_id: "first-a",
+    generation: 1,
+    status: "created",
+  });
+  expect(resolution?.binding_id).not.toBe("old-binding");
 });

@@ -71,7 +71,7 @@ test("inference requests larger than 96 MiB return an OpenAI-compatible 413", as
       api_keys: [],
       model_routes: {},
     },
-    { api_key: "client", services: [] },
+    { id: "client", api_key: "client", services: [] },
     "responses",
   );
 

@@ -66,10 +66,10 @@ function inferenceFixture(retry) {
   return {
     affinities,
     calls,
-    client: { api_key: "client", services: [service.id] },
+    client: { id: "client", api_key: "client", services: [service.id] },
     config: {
       services: [service],
-      api_keys: [{ api_key: "client", services: [service.id] }],
+      api_keys: [{ id: "client", api_key: "client", services: [service.id] }],
       model_routes: {},
     },
     env: {
@@ -390,8 +390,8 @@ test("forwarding strips a client-supplied X-Real-IP", () => {
 
 test("client API keys are selected through the asynchronous secret comparison", async () => {
   const entries = [
-    { api_key: "first-key", services: ["first"] },
-    { api_key: "matching-key", services: ["second"] },
+    { id: "first-client", api_key: "first-key", services: ["first"] },
+    { id: "matching-client", api_key: "matching-key", services: ["second"] },
   ];
   const match = await findClientApiKey(
     new Request("https://gateway.example", {

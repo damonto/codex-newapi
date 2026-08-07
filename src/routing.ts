@@ -125,11 +125,17 @@ function sortRoutedServices(
   config: GatewayConfig,
 ): RoutedService[] {
   const order = new Map(config.services.map((service, index) => [service.id, index]));
+  const serviceOrder = (serviceId: string): number => {
+    const index = order.get(serviceId);
+    if (index === undefined) {
+      throw new Error(`routed service ${serviceId} is missing from configuration`);
+    }
+    return index;
+  };
   return [...targets].sort(
     (left, right) =>
       right.service.priority - left.service.priority ||
-      (order.get(left.service.id) ?? Number.MAX_SAFE_INTEGER) -
-        (order.get(right.service.id) ?? Number.MAX_SAFE_INTEGER),
+      serviceOrder(left.service.id) - serviceOrder(right.service.id),
   );
 }
 
@@ -341,7 +347,6 @@ export async function selectAvailableServiceWithDetails(
 export async function selectAvailableService(
   env: Env,
   route: ModelRoute,
-  _requestId?: string,
 ): Promise<ServiceConfig | undefined> {
   return (await selectAvailableServiceWithDetails(env, route)).target?.service;
 }

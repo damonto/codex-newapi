@@ -42,9 +42,9 @@ test("session affinity indexes paginate and remove only matching bindings", asyn
     next_cursor: null,
   });
 
-  expect(await stub.remove(digest("a"), "wrong-binding")).toBe(false);
+  expect(await stub.remove(digest("a"), "wrong-binding", 1)).toBe(false);
   expect(await stub.get(digest("a"))).toEqual(entries[0]);
-  expect(await stub.remove(digest("a"), "binding-first")).toBe(true);
+  expect(await stub.remove(digest("a"), "binding-first", 1)).toBe(true);
   expect(await stub.get(digest("a"))).toBeNull();
 });
 
@@ -73,7 +73,7 @@ test("an index upsert protects a replacement binding from stale deletion", async
     generation: 1,
   });
 
-  expect(await stub.remove(sessionDigest, "old-binding")).toBe(false);
+  expect(await stub.remove(sessionDigest, "old-binding", 1)).toBe(false);
   expect(await stub.get(sessionDigest)).toEqual({
     session_digest: sessionDigest,
     session_id: "session",

@@ -52,10 +52,12 @@
   ],
   "api_keys": [
     {
+      "id": "client-a",
       "api_key": "sk-gateway-client-a",
       "services": ["newapi-primary", "newapi-secondary"]
     },
     {
+      "id": "client-b",
       "api_key": "sk-gateway-client-b",
       "services": ["newapi-secondary"]
     }

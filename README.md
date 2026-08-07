@@ -81,6 +81,7 @@ npm run deploy
   ],
   "api_keys": [
     {
+      "id": "client",
       "api_key": "sk-client",
       "services": ["primary"]
     }
@@ -101,9 +102,11 @@ npm run deploy
 - `services[].keys`: upstream credentials for one service. The highest-priority available key is used; equal priorities follow configuration order.
 - `services[].supports_websocket`: whether the service can receive Responses WebSocket connections. Defaults to `false` when omitted.
 - `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests. Defaults to `false` when omitted.
-- `api_keys`: keys used by your clients and the services each key may access.
+- `api_keys`: keys used by your clients and the services each key may access. Each entry requires a globally unique, non-sensitive `id`.
 - `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services.
 - `retry`: optional status codes and delays. Each delay adds one retry; omitting this field disables retries.
+
+Existing configurations must add an `id` to every `api_keys` entry before they can be validated or loaded.
 
 When a route omits `services`, all client-authorized services that list its upstream model are eligible. When `services` is present, it is intersected with the client API key's allowed services. Unconfigured model names are forwarded directly.
 
@@ -121,7 +124,7 @@ Session bindings are isolated by the authenticated client API key and can be man
 
 Every service must declare a non-empty `keys` array, although all entries may be disabled to take that service out of routing. The former `services[].api_key` field is no longer accepted.
 
-Key IDs appear in structured logs. Use descriptive, non-sensitive labels and never copy credential values into `id`.
+Client key IDs appear as `client_key_id` in authenticated request summaries. Upstream key IDs continue to appear in routing and upstream log sections. Use descriptive, non-sensitive labels and never copy credential values into `id`.
 
 To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through `model_routes`.
 

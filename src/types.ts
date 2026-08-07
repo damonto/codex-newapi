@@ -23,6 +23,7 @@ export interface ServiceConfig {
 }
 
 export interface ClientApiKeyConfig {
+  id: string;
   api_key: string;
   services: string[];
 }

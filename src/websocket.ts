@@ -4,7 +4,6 @@ import {
   forwardableWebSocketHeaders,
   openAiError,
 } from "./http.ts";
-import type { HealthExecutionContext } from "./health.ts";
 import type { RequestLogContext } from "./log.ts";
 import {
   RESPONSES_WEBSOCKET_CLIENT_DIGEST_HEADER,
@@ -18,7 +17,6 @@ export async function handleResponsesWebSocket(
   initialConfig: GatewayConfig,
   initialClient: ClientApiKeyConfig,
   requestId: string,
-  _context?: HealthExecutionContext,
   requestLog?: RequestLogContext,
 ): Promise<Response> {
   if (request.headers.has("sec-websocket-protocol")) {

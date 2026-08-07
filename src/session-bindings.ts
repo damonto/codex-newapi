@@ -35,15 +35,6 @@ function sessionJsonResponse(value: unknown): Response {
   return jsonResponse(value, 200, { "cache-control": "no-store" });
 }
 
-function storedGeneration(record: SessionAffinityRecord): number | undefined {
-  if (record.generation === undefined) {
-    return 1;
-  }
-  return Number.isSafeInteger(record.generation) && record.generation >= 1
-    ? record.generation
-    : undefined;
-}
-
 function encodeCursor(value: string): string {
   return btoa(`v1:${value}`)
     .replace(/\+/g, "-")
@@ -125,10 +116,11 @@ function sessionView(
   status: SessionAffinityRecord,
   registryName: string,
 ): SessionBindingView | undefined {
-  const statusGeneration = storedGeneration(status);
   if (
     status.binding_id !== entry.binding_id ||
-    statusGeneration !== entry.generation ||
+    status.generation !== entry.generation ||
+    !Number.isSafeInteger(status.generation) ||
+    status.generation < 1 ||
     status.session_id !== entry.session_id ||
     status.registry_name !== registryName ||
     status.session_digest !== entry.session_digest ||

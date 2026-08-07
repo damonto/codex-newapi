@@ -50,7 +50,7 @@ const config = parseConfig({
       models: ["grok-4.5", "review-model"],
     },
   ],
-  api_keys: [{ api_key: "client", services: ["secondary", "primary"] }],
+  api_keys: [{ id: "client", api_key: "client", services: ["secondary", "primary"] }],
   model_routes: {
     "gpt-5.6-sol": { model: "grok-4.5" },
     "codex-auto-review": { model: "review-model", services: ["secondary"] },
@@ -165,7 +165,7 @@ test("route service constraints override global service priority", () => {
 test("route service constraints are intersected with client service access", () => {
   const route = resolveModelRoute(
     config,
-    { api_key: "limited", services: ["primary"] },
+    { id: "limited", api_key: "limited", services: ["primary"] },
     "codex-auto-review",
   );
   assert.deepEqual(route.targets, []);
@@ -205,7 +205,7 @@ test("required capabilities filter services before routing selection", () => {
         models: ["model"],
       },
     ],
-    api_keys: [{ api_key: "client", services: ["unsupported", "supported"] }],
+    api_keys: [{ id: "client", api_key: "client", services: ["unsupported", "supported"] }],
     model_routes: {},
   });
   const capabilityClient = capabilityConfig.api_keys[0];
@@ -350,7 +350,7 @@ test("service-first and key-second random selection use independent tie boundari
         models: ["model"],
       },
     ],
-    api_keys: [{ api_key: "client", services: ["first", "second"] }],
+    api_keys: [{ id: "client", api_key: "client", services: ["first", "second"] }],
     model_routes: {},
   });
   const route = resolveModelRoute(equalConfig, equalConfig.api_keys[0], "model");
@@ -417,7 +417,7 @@ test("catalog selection uses catalog health and randomizes only tied keys per se
       priority: 10,
       models: ["model"],
     }],
-    api_keys: [{ api_key: "client", services: ["catalog"] }],
+    api_keys: [{ id: "client", api_key: "client", services: ["catalog"] }],
     model_routes: {},
   });
   const { env, healthObject } = routingEnvironment();
@@ -458,7 +458,7 @@ test("session affinity is stable, client-isolated, and rebinds after key cooldow
         models: ["model"],
       },
     ],
-    api_keys: [{ api_key: "client-a", services: ["first", "second"] }],
+    api_keys: [{ id: "client-a", api_key: "client-a", services: ["first", "second"] }],
     model_routes: {},
   });
   const route = resolveModelRoute(equalConfig, equalConfig.api_keys[0], "model");
@@ -574,7 +574,7 @@ test("equal service and key priorities do not churn an existing affinity", async
         models: ["model"],
       },
     ],
-    api_keys: [{ api_key: "client", services: ["first", "second"] }],
+    api_keys: [{ id: "client", api_key: "client", services: ["first", "second"] }],
     model_routes: {},
   });
   const { env } = routingEnvironment();
@@ -620,7 +620,7 @@ test("session affinity rebinds after a required service capability is removed", 
         models: ["model"],
       },
     ],
-    api_keys: [{ api_key: "client", services: ["first", "second"] }],
+    api_keys: [{ id: "client", api_key: "client", services: ["first", "second"] }],
     model_routes: {},
   });
   const { env } = routingEnvironment();
@@ -688,7 +688,7 @@ test("session affinity rebinds for every configuration, permission, model, and s
 
   const permissionRoute = resolveModelRoute(
     config,
-    { api_key: "client", services: ["primary"] },
+    { id: "client", api_key: "client", services: ["primary"] },
     "gpt-5.6-sol",
   );
   const permissionSelection = await selectAvailableServiceWithDetails(env, permissionRoute, {
@@ -816,7 +816,7 @@ test("a model route requires the real upstream model in the service list", () =>
             models: ["gpt-5.6-sol", "review-model"],
           },
         ],
-        api_keys: [{ api_key: "alias-client", services: ["alias-only"] }],
+        api_keys: [{ id: "alias-client", api_key: "alias-client", services: ["alias-only"] }],
         model_routes: {
           "gpt-5.6-sol": { model: "grok-4.5" },
           "codex-auto-review": {

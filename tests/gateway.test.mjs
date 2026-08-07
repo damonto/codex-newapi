@@ -43,7 +43,7 @@ function gatewayConfig() {
         models: ["grok-4.5", "review-model"],
       },
     ],
-    api_keys: [{ api_key: "client-key", services: ["primary"] }],
+    api_keys: [{ id: "gateway-client", api_key: "client-key", services: ["primary"] }],
     model_routes: {
       "gpt-5.6-sol": { model: "grok-4.5" },
       "codex-auto-review": { model: "review-model", services: ["primary"] },
@@ -68,7 +68,7 @@ function testEnv(config) {
     const index = sessionIndex(record.registry_name);
     const current = index.get(record.session_digest);
     if (current?.binding_id !== record.binding_id ||
-      (record.generation !== undefined && current.generation !== record.generation)) {
+      current.generation !== record.generation) {
       return false;
     }
     return index.delete(record.session_digest);
@@ -110,7 +110,7 @@ function testEnv(config) {
             if (decision.status === "rebound" && stored.binding_id) {
               next.binding_id = crypto.randomUUID();
               next.created_at = now;
-              next.generation = (stored.generation ?? 1) + 1;
+              next.generation = stored.generation + 1;
               next.index_registered = true;
               removeIndexEntry(stored);
               sessionIndex(stored.registry_name).set(stored.session_digest, {
@@ -128,32 +128,29 @@ function testEnv(config) {
             affinities.delete(name);
             return undefined;
           }
+          if (!registration) {
+            throw new Error("session affinity registration is required");
+          }
           const now = Date.now();
           const next = {
             ...preferred,
             updated_at: now,
-            ...(registration
-              ? {
-                binding_id: crypto.randomUUID(),
-                created_at: now,
-                generation: 1,
-                registry_name: registration.registry_name,
-                session_digest: registration.session_digest,
-                session_id: registration.session_id,
-                index_registered: true,
-              }
-              : {}),
+            binding_id: crypto.randomUUID(),
+            created_at: now,
+            generation: 1,
+            registry_name: registration.registry_name,
+            session_digest: registration.session_digest,
+            session_id: registration.session_id,
+            index_registered: true,
           };
           affinities.set(name, next);
-          if (registration) {
-            sessionIndex(registration.registry_name).set(registration.session_digest, {
-              session_digest: registration.session_digest,
-              session_id: registration.session_id,
-              binding_id: next.binding_id,
-              created_at: now,
-              generation: next.generation ?? 1,
-            });
-          }
+          sessionIndex(registration.registry_name).set(registration.session_digest, {
+            session_digest: registration.session_digest,
+            session_id: registration.session_id,
+            binding_id: next.binding_id,
+            created_at: now,
+            generation: next.generation,
+          });
           return { ...next, status: "created" };
         },
         getStatus: async () => {
@@ -165,7 +162,7 @@ function testEnv(config) {
         clearIfBindingId: async (bindingId, generation) => {
           const stored = affinities.get(name);
           if (!stored || stored.binding_id !== bindingId ||
-            (generation !== undefined && (stored.generation ?? 1) !== generation)) {
+            stored.generation !== generation) {
             return false;
           }
           affinities.delete(name);
@@ -182,7 +179,7 @@ function testEnv(config) {
           affinities.delete(name);
           return {
             binding_id: stored.binding_id,
-            generation: stored.generation ?? 1,
+            generation: stored.generation,
           };
         },
       }),
@@ -193,11 +190,15 @@ function testEnv(config) {
           const index = sessionIndex(name);
           const current = index.get(entry.session_digest);
           if (current &&
-            (entry.generation < (current.generation ?? 1) ||
-              (entry.generation === (current.generation ?? 1) &&
+            (entry.generation < current.generation ||
+              (entry.generation === current.generation &&
                 entry.binding_id !== current.binding_id))) return current;
           index.set(entry.session_digest, { ...entry });
-          return index.get(entry.session_digest);
+          const registered = index.get(entry.session_digest);
+          if (!registered) {
+            throw new Error("session affinity index write was not persisted");
+          }
+          return registered;
         },
         get: async (sessionDigest) =>
           sessionIndex(name).get(sessionDigest) ?? null,
@@ -206,18 +207,24 @@ function testEnv(config) {
             .filter((entry) => cursor === null || entry.session_digest > cursor)
             .sort((left, right) => left.session_digest.localeCompare(right.session_digest));
           const data = rows.slice(0, limit);
+          let nextCursor = null;
+          if (rows.length > limit) {
+            const lastEntry = data[data.length - 1];
+            if (!lastEntry) {
+              throw new Error("session affinity index page is unexpectedly empty");
+            }
+            nextCursor = lastEntry.session_digest;
+          }
           return {
             data,
-            next_cursor: rows.length > limit
-              ? data[data.length - 1]?.session_digest ?? null
-              : null,
+            next_cursor: nextCursor,
           };
         },
         remove: async (sessionDigest, bindingId, generation) => {
           const index = sessionIndex(name);
           const current = index.get(sessionDigest);
           if (current?.binding_id !== bindingId ||
-            (generation !== undefined && current.generation !== generation)) {
+            current.generation !== generation) {
             return false;
           }
           return index.delete(sessionDigest);
@@ -768,6 +775,7 @@ test("gateway logs correlate a request without logging credentials or body conte
   assert.equal(entry.path, "/v1/responses");
   assert.equal(entry.response_status, 200);
   assert.equal(entry.outcome, "success");
+  assert.equal(entry.client_key_id, "gateway-client");
   assert.deepEqual(entry.routing.candidate_services, ["primary"]);
   assert.deepEqual(entry.routing.checked_available_services, ["primary"]);
   assert.equal(entry.routing.selected_service, "primary");
@@ -968,6 +976,7 @@ test("model catalog fan-out is summarized in one request log", async () => {
   assert.equal(captured.entries.length, 1);
   const [entry] = captured.entries;
   assert.equal(entry.event, "request.summary");
+  assert.equal(entry.client_key_id, "gateway-client");
   assert.deepEqual(entry.routing.candidate_services, ["primary"]);
   assert.deepEqual(entry.routing.selected_keys, [
     { service_id: "primary", key_id: "primary-key" },
@@ -1531,10 +1540,10 @@ test("an authenticated client can list and clear health only for allowed service
   );
   assert.equal(catalogKeyResponse.status, 200);
   assert.equal(
-    await keyIsAvailable(env, "primary", "primary-key", "test", "catalog"),
+    await keyIsAvailable(env, "primary", "primary-key", "catalog"),
     true,
   );
-  assert.equal(await serviceIsAvailable(env, "primary", "test", "catalog"), false);
+  assert.equal(await serviceIsAvailable(env, "primary", "catalog"), false);
 
   const keyResponse = await worker.fetch(
     new Request("https://gateway.example/v1/health/primary/primary-key", {
@@ -1629,7 +1638,11 @@ test("health endpoints reject an invalid scope", async () => {
 test("authenticated clients can page, inspect, and delete only their session bindings", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
-  config.api_keys.push({ api_key: "other-client-key", services: ["primary"] });
+  config.api_keys.push({
+    id: "other-client",
+    api_key: "other-client-key",
+    services: ["primary"],
+  });
   const env = testEnv(config);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(null, { status: 200 });
@@ -1817,7 +1830,7 @@ test("a stale indexed delete protects the replacement and remains retryable", as
       session_id: identity.session_id,
       binding_id: "stale-binding",
       created_at: current.created_at,
-      generation: Math.max(1, (current.generation ?? 1) - 1),
+      generation: Math.max(1, current.generation - 1),
     });
 
     const deleted = await worker.fetch(

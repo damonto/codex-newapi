@@ -62,6 +62,20 @@ test("Codex aggregation only returns exact catalog matches", () => {
   );
 });
 
+test("model cache key hashing failures propagate", async (t) => {
+  clearModelsCacheForTests();
+  t.mock.method(crypto.subtle, "digest", async () => {
+    throw new Error("SHA-256 unavailable");
+  });
+  const config = modelConfig();
+  const { env } = healthEnvironment();
+
+  await assert.rejects(
+    handleModels(modelRequest(), env, config, config.api_keys[0]),
+    /SHA-256 unavailable/,
+  );
+});
+
 function modelConfig(serviceCount = 1) {
   const services = Array.from({ length: serviceCount }, (_, index) => ({
     id: `service-${index}`,
@@ -86,7 +100,11 @@ function modelConfig(serviceCount = 1) {
   }));
   return {
     services,
-    api_keys: [{ api_key: "client", services: services.map((service) => service.id) }],
+    api_keys: [{
+      id: "client",
+      api_key: "client",
+      services: services.map((service) => service.id),
+    }],
     model_routes: {
       "codex-auto-review": { model: "model", services: [services[0].id] },
     },
@@ -191,11 +209,11 @@ test("HTTP 403 model catalog responses cool only the selected catalog key", asyn
     assert.equal(calls.keyFailure, 1);
     assert.equal(calls.failure, 0);
     assert.equal(
-      await keyIsAvailable(env, "service-0", "primary-key-0", "test", "catalog"),
+      await keyIsAvailable(env, "service-0", "primary-key-0", "catalog"),
       false,
     );
     assert.equal(
-      await keyIsAvailable(env, "service-0", "primary-key-0", "test", "inference"),
+      await keyIsAvailable(env, "service-0", "primary-key-0", "inference"),
       true,
     );
   } finally {

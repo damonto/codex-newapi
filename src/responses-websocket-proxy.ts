@@ -353,7 +353,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     let config: GatewayConfig;
     let client: ClientApiKeyConfig | undefined;
     try {
-      config = await loadConfig(this.env, state.request_id);
+      config = await loadConfig(this.env);
       client = await findClientApiKeyByDigest(
         state.client_api_key_digest,
         config.api_keys,

@@ -22,7 +22,7 @@ function validConfig() {
         models: ["grok-4.5", "review-model"],
       },
     ],
-    api_keys: [{ api_key: "client-key", services: ["primary"] }],
+    api_keys: [{ id: "client", api_key: "client-key", services: ["primary"] }],
     model_routes: {
       "gpt-5.6-sol": { model: "grok-4.5" },
       "codex-auto-review": { model: "review-model", services: ["primary"] },
@@ -46,6 +46,11 @@ test("parseConfig normalizes and validates a complete configuration", () => {
   ]);
   assert.equal(config.services[0].retry, undefined);
   assert.equal(Object.hasOwn(config.services[0], "retry"), false);
+  assert.deepEqual(config.api_keys[0], {
+    id: "client",
+    api_key: "client-key",
+    services: ["primary"],
+  });
   assert.deepEqual(config.model_routes["gpt-5.6-sol"], { model: "grok-4.5" });
   assert.deepEqual(config.model_routes["codex-auto-review"], {
     model: "review-model",
@@ -339,6 +344,41 @@ test("parseConfig rejects API keys that reference unknown services", () => {
   const input = validConfig();
   input.api_keys[0].services = ["missing"];
   assert.throws(() => parseConfig(input), ConfigError);
+});
+
+test("parseConfig requires valid, globally unique client API key ids", () => {
+  const cases = [
+    ["api_keys[0].id must be a non-empty string", (input) => {
+      delete input.api_keys[0].id;
+    }],
+    ["api_keys[0].id contains unsupported characters", (input) => {
+      input.api_keys[0].id = "bad key";
+    }],
+    ["api_keys[0].id contains unsupported characters", (input) => {
+      input.api_keys[0].id = " client ";
+    }],
+  ];
+
+  for (const [message, mutate] of cases) {
+    const input = validConfig();
+    mutate(input);
+    assert.throws(
+      () => parseConfig(input),
+      (error) => error instanceof ConfigError && error.message === message,
+    );
+  }
+
+  const duplicate = validConfig();
+  duplicate.api_keys.push({
+    ...duplicate.api_keys[0],
+    api_key: "other-client-key",
+  });
+  assert.throws(
+    () => parseConfig(duplicate),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message === "api_keys.id values must be unique",
+  );
 });
 
 test("parseConfig rejects fields that are not declared by the schema", () => {

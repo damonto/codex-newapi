@@ -36,7 +36,7 @@ const SERVICE_API_KEY_FIELDS = new Set([
   "disabled",
   "priority",
 ]);
-const API_KEY_FIELDS = new Set(["api_key", "services"]);
+const API_KEY_FIELDS = new Set(["id", "api_key", "services"]);
 const MODEL_ROUTE_FIELDS = new Set(["model", "services"]);
 const RETRY_FIELDS = new Set(["status_codes", "delays_ms"]);
 
@@ -178,7 +178,7 @@ function validateBaseUrl(value: string, path: string): string {
 
 function validateId(value: unknown, path: string): string {
   const id = requiredString(value, path);
-  if (!/^[A-Za-z0-9._-]+$/.test(id)) {
+  if (id !== value || !/^[A-Za-z0-9._-]+$/.test(id)) {
     throw new ConfigError(`${path} contains unsupported characters`);
   }
   return id;
@@ -245,6 +245,7 @@ function parseApiKey(value: unknown, index: number): ClientApiKeyConfig {
   }
   rejectUnknownFields(value, API_KEY_FIELDS, path);
   return {
+    id: validateId(value.id, `${path}.id`),
     api_key: requiredString(value.api_key, `${path}.api_key`),
     services: stringArray(value.services, `${path}.services`),
   };
@@ -306,6 +307,9 @@ export function parseConfig(value: unknown): GatewayConfig {
   }
 
   const apiKeys = value.api_keys.map(parseApiKey);
+  if (new Set(apiKeys.map((entry) => entry.id)).size !== apiKeys.length) {
+    throw new ConfigError("api_keys.id values must be unique");
+  }
   if (new Set(apiKeys.map((entry) => entry.api_key)).size !== apiKeys.length) {
     throw new ConfigError("api_keys.api_key values must be unique");
   }
@@ -358,7 +362,6 @@ function cacheTtlMs(env: Env): number {
 
 export async function loadConfig(
   env: Env,
-  _requestId?: string,
   requestLog?: RequestLogContext,
 ): Promise<GatewayConfig> {
   const now = Date.now();

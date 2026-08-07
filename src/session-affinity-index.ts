@@ -51,17 +51,9 @@ export class SessionAffinityIndex extends DurableObject<Env> {
           session_id TEXT NOT NULL,
           binding_id TEXT NOT NULL,
           created_at INTEGER NOT NULL,
-          generation INTEGER NOT NULL DEFAULT 1
+          generation INTEGER NOT NULL
         )
       `);
-      const columns = this.ctx.storage.sql.exec<{ name: string }>(
-        "PRAGMA table_info(sessions)",
-      ).toArray();
-      if (!columns.some((column) => column.name === "generation")) {
-        this.ctx.storage.sql.exec(
-          "ALTER TABLE sessions ADD COLUMN generation INTEGER NOT NULL DEFAULT 1",
-        );
-      }
     });
   }
 
@@ -86,7 +78,11 @@ export class SessionAffinityIndex extends DurableObject<Env> {
       entry.created_at,
       entry.generation,
     );
-    return this.get(entry.session_digest) ?? entry;
+    const registered = this.get(entry.session_digest);
+    if (!registered) {
+      throw new Error("session affinity index write was not persisted");
+    }
+    return registered;
   }
 
   get(sessionDigest: string): SessionAffinityIndexEntry | null {
@@ -129,41 +125,41 @@ export class SessionAffinityIndex extends DurableObject<Env> {
         limit + 1,
       ).toArray();
     const data = rows.slice(0, limit);
+    let nextCursor: string | null = null;
+    if (rows.length > limit) {
+      const lastEntry = data[data.length - 1];
+      if (!lastEntry) {
+        throw new Error("session affinity index page is unexpectedly empty");
+      }
+      nextCursor = lastEntry.session_digest;
+    }
     return {
       data,
-      next_cursor: rows.length > limit
-        ? data[data.length - 1]?.session_digest ?? null
-        : null,
+      next_cursor: nextCursor,
     };
   }
 
   remove(
     sessionDigest: string,
     bindingId: string,
-    generation?: number,
+    generation: number,
   ): boolean {
     if (
       typeof sessionDigest !== "string" ||
       !DIGEST_PATTERN.test(sessionDigest) ||
       typeof bindingId !== "string" ||
       bindingId.trim() === "" ||
-      (generation !== undefined &&
-        (!Number.isSafeInteger(generation) || generation < 1))
+      !Number.isSafeInteger(generation) ||
+      generation < 1
     ) {
       return false;
     }
-    const result = generation === undefined
-      ? this.ctx.storage.sql.exec(
-        "DELETE FROM sessions WHERE session_digest = ? AND binding_id = ?",
-        sessionDigest,
-        bindingId,
-      )
-      : this.ctx.storage.sql.exec(
-        "DELETE FROM sessions WHERE session_digest = ? AND binding_id = ? AND generation = ?",
-        sessionDigest,
-        bindingId,
-        generation,
-      );
+    const result = this.ctx.storage.sql.exec(
+      "DELETE FROM sessions WHERE session_digest = ? AND binding_id = ? AND generation = ?",
+      sessionDigest,
+      bindingId,
+      generation,
+    );
     return result.rowsWritten > 0;
   }
 }
