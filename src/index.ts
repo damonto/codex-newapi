@@ -14,17 +14,33 @@ import {
 } from "./log.ts";
 import { handleModels } from "./models.ts";
 import { handleInference, type InferencePath } from "./proxy.ts";
+import {
+  decodeSessionIdPath,
+  handleSessionClearAll,
+  handleSessionClearOne,
+  handleSessionList,
+} from "./session-bindings.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
 import { handleResponsesWebSocket } from "./websocket.ts";
 
-type GatewayEndpoint = "models" | "health" | InferencePath;
+type GatewayEndpoint = "models" | "health" | "sessions" | InferencePath;
 
 type GatewayRoute =
-  | { endpoint: Exclude<GatewayEndpoint, "health"> }
+  | { endpoint: Exclude<GatewayEndpoint, "health" | "sessions"> }
   | { endpoint: "health"; action: "list" }
-  | { endpoint: "health"; action: "clear"; serviceId: string; keyId?: string };
+  | { endpoint: "health"; action: "clear"; serviceId: string; keyId?: string }
+  | { endpoint: "sessions"; action: "collection" }
+  | { endpoint: "sessions"; action: "clear"; encodedSessionId: string };
 
 function route(pathname: string): GatewayRoute | undefined {
+  const sessionMatch = pathname.match(/^\/(?:v1\/)?sessions\/(.*)$/);
+  if (sessionMatch) {
+    return {
+      endpoint: "sessions",
+      action: "clear",
+      encodedSessionId: sessionMatch[1],
+    };
+  }
   const keyHealthMatch = pathname.match(
     /^\/(?:v1\/)?health\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/,
   );
@@ -44,6 +60,9 @@ function route(pathname: string): GatewayRoute | undefined {
     case "/health":
     case "/v1/health":
       return { endpoint: "health", action: "list" };
+    case "/sessions":
+    case "/v1/sessions":
+      return { endpoint: "sessions", action: "collection" };
     case "/models":
     case "/v1/models":
       return { endpoint: "models" };
@@ -84,11 +103,14 @@ function invalidHealthScope(): Response {
   );
 }
 
-function expectedMethod(route: GatewayRoute): "GET" | "POST" | "DELETE" {
+function expectedMethods(route: GatewayRoute): readonly string[] {
   if (route.endpoint === "models" || (route.endpoint === "health" && route.action === "list")) {
-    return "GET";
+    return ["GET"];
   }
-  return route.endpoint === "health" ? "DELETE" : "POST";
+  if (route.endpoint === "sessions") {
+    return route.action === "collection" ? ["GET", "DELETE"] : ["DELETE"];
+  }
+  return route.endpoint === "health" ? ["DELETE"] : ["POST"];
 }
 
 async function handleHealthList(
@@ -197,6 +219,35 @@ async function handleHealthClear(
   });
 }
 
+async function handleSessions(
+  request: Request,
+  env: Env,
+  client: ClientApiKeyConfig,
+  incomingUrl: URL,
+  matchedRoute: Extract<GatewayRoute, { endpoint: "sessions" }>,
+  requestLog: RequestLogContext,
+): Promise<Response> {
+  if (matchedRoute.action === "collection") {
+    return request.method === "GET"
+      ? handleSessionList(env, client, incomingUrl, requestLog)
+      : handleSessionClearAll(env, client, requestLog);
+  }
+  const sessionId = decodeSessionIdPath(matchedRoute.encodedSessionId);
+  if (!sessionId) {
+    requestLog.warn({
+      outcome: "invalid_session_id",
+      sessions: { action: "clear_one" },
+    });
+    return openAiError(
+      400,
+      "session_id must be a non-empty URL-encoded string",
+      "invalid_request_error",
+      "invalid_session_id",
+    );
+  }
+  return handleSessionClearOne(env, client, sessionId, requestLog);
+}
+
 function isResponsesWebSocketRequest(
   request: Request,
   matchedRoute: GatewayRoute,
@@ -204,6 +255,62 @@ function isResponsesWebSocketRequest(
   return matchedRoute.endpoint === "responses" &&
     request.method === "GET" &&
     request.headers.get("upgrade")?.toLowerCase() === "websocket";
+}
+
+async function handleMatchedRoute(
+  request: Request,
+  env: Env,
+  config: GatewayConfig,
+  client: ClientApiKeyConfig,
+  incomingUrl: URL,
+  matchedRoute: GatewayRoute,
+  requestId: string,
+  context: ExecutionContext,
+  websocketRequest: boolean,
+  requestLog: RequestLogContext,
+): Promise<Response> {
+  if (matchedRoute.endpoint === "models") {
+    return handleModels(request, env, config, client, requestId, context, requestLog);
+  }
+  if (matchedRoute.endpoint === "health") {
+    return matchedRoute.action === "list"
+      ? handleHealthList(env, config, client, incomingUrl, requestLog)
+      : handleHealthClear(
+        env,
+        config,
+        client,
+        incomingUrl,
+        matchedRoute.serviceId,
+        matchedRoute.keyId,
+        requestId,
+        requestLog,
+      );
+  }
+  if (matchedRoute.endpoint === "sessions") {
+    return handleSessions(request, env, client, incomingUrl, matchedRoute, requestLog);
+  }
+  if (websocketRequest) {
+    return handleResponsesWebSocket(
+      request,
+      env,
+      config,
+      client,
+      requestId,
+      context,
+      requestLog,
+    );
+  }
+  return handleInference(
+    request,
+    env,
+    config,
+    client,
+    matchedRoute.endpoint,
+    requestId,
+    context,
+    {},
+    requestLog,
+  );
 }
 
 export default {
@@ -214,6 +321,12 @@ export default {
     const matchedRoute = route(incomingUrl.pathname);
     const endpoint = matchedRoute?.endpoint;
     const requestLog = new RequestLogContext(requestId, request, endpoint, context);
+    if (matchedRoute?.endpoint === "sessions" && matchedRoute.action === "clear") {
+      const prefix = incomingUrl.pathname.startsWith("/v1/")
+        ? "/v1/sessions"
+        : "/sessions";
+      requestLog.set({ path: `${prefix}/{session_id}` });
+    }
     const finish = (response: Response): Response => requestLog.complete(response);
     const clientToken = bearerToken(request);
     if (clientToken) {
@@ -225,13 +338,16 @@ export default {
       return finish(openAiError(404, "Not found", "invalid_request_error", "not_found"));
     }
     const websocketRequest = isResponsesWebSocketRequest(request, matchedRoute);
-    const allowedMethod = expectedMethod(matchedRoute);
-    if (!websocketRequest && request.method !== allowedMethod) {
+    const allowedMethods = expectedMethods(matchedRoute);
+    if (!websocketRequest && !allowedMethods.includes(request.method)) {
       requestLog.warn({
         outcome: "method_rejected",
-        expected_method: allowedMethod,
+        expected_methods: allowedMethods,
       });
-      return finish(openAiError(405, `Only ${allowedMethod} is allowed for this endpoint`));
+      return finish(openAiError(
+        405,
+        `Only ${allowedMethods.join(" or ")} is allowed for this endpoint`,
+      ));
     }
 
     let config;
@@ -263,42 +379,18 @@ export default {
     });
 
     try {
-      const response = matchedRoute.endpoint === "models"
-        ? await handleModels(request, env, config, client, requestId, context, requestLog)
-        : matchedRoute.endpoint === "health"
-        ? matchedRoute.action === "list"
-          ? await handleHealthList(env, config, client, incomingUrl, requestLog)
-          : await handleHealthClear(
-            env,
-            config,
-            client,
-            incomingUrl,
-            matchedRoute.serviceId,
-            matchedRoute.keyId,
-            requestId,
-            requestLog,
-          )
-        : websocketRequest
-        ? await handleResponsesWebSocket(
-          request,
-          env,
-          config,
-          client,
-          requestId,
-          context,
-          requestLog,
-        )
-        : await handleInference(
-          request,
-          env,
-          config,
-          client,
-          matchedRoute.endpoint,
-          requestId,
-          context,
-          {},
-          requestLog,
-        );
+      const response = await handleMatchedRoute(
+        request,
+        env,
+        config,
+        client,
+        incomingUrl,
+        matchedRoute,
+        requestId,
+        context,
+        websocketRequest,
+        requestLog,
+      );
       return finish(response);
     } catch (error) {
       requestLog.error({

@@ -170,8 +170,8 @@ export async function fetchWithConfiguredRetries(
   }
 }
 
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+function nonBlankString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 export function sessionIdForInference(
@@ -179,7 +179,7 @@ export function sessionIdForInference(
   payload: InferencePayload,
   upstreamPath: InferencePath,
 ): string | undefined {
-  const headerSessionId = nonEmptyString(request.headers.get("session-id"));
+  const headerSessionId = nonBlankString(request.headers.get("session-id"));
   if (headerSessionId) {
     return headerSessionId;
   }
@@ -189,7 +189,7 @@ export function sessionIdForInference(
     clientMetadata !== null &&
     !Array.isArray(clientMetadata)
   ) {
-    const metadataSessionId = nonEmptyString(
+    const metadataSessionId = nonBlankString(
       (clientMetadata as Record<string, unknown>).session_id,
     );
     if (metadataSessionId) {
@@ -197,7 +197,7 @@ export function sessionIdForInference(
     }
   }
   return upstreamPath === "alpha/search"
-    ? nonEmptyString(payload.id)
+    ? nonBlankString(payload.id)
     : undefined;
 }
 

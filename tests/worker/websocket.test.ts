@@ -16,6 +16,7 @@ import {
 } from "vitest";
 
 import { clearConfigCacheForTests } from "../../src/config.ts";
+import { FAILURE_THRESHOLD } from "../../src/health.ts";
 import worker from "../../src/index.ts";
 import { ResponsesWebSocketProxy } from "../../src/responses-websocket-proxy.ts";
 import type { GatewayConfig } from "../../src/types.ts";
@@ -1010,6 +1011,90 @@ test("a later response.create that requires another target closes and rebinds on
   const secondUpstreamClosed = nextUpstreamClose(secondUpstream);
   second.socket.close(1000, "done");
   await secondUpstreamClosed;
+});
+
+test("a recovered higher-priority service changes affinity and requires WebSocket reconnect", async () => {
+  const config = gatewayConfig();
+  config.services = [
+    {
+      id: "higher",
+      base_url: "https://higher.example/v1",
+      keys: [{
+        id: "higher-key",
+        api_key: "higher-secret",
+        disabled: false,
+        priority: 10,
+      }],
+      disabled: false,
+      priority: 100,
+      supports_websocket: true,
+      supports_web_search: false,
+      models: ["upstream-model"],
+    },
+    {
+      id: "lower",
+      base_url: "https://lower.example/v1",
+      keys: [{
+        id: "lower-key",
+        api_key: "lower-secret",
+        disabled: false,
+        priority: 100,
+      }],
+      disabled: false,
+      priority: 10,
+      supports_websocket: true,
+      supports_web_search: false,
+      models: ["upstream-model"],
+    },
+  ];
+  config.api_keys[0].services = ["higher", "lower"];
+  await putConfig(config);
+  for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
+    await env.HEALTH.getByName("higher").recordFailure();
+  }
+
+  const lowerUpstream = upstreamPair();
+  const higherUpstream = upstreamPair();
+  const authorizations: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    authorizations.push(request.headers.get("authorization") ?? "");
+    return authorizations.length === 1
+      ? openUpstream(lowerUpstream)
+      : openUpstream(higherUpstream);
+  }));
+
+  const first = await openGatewaySocket("/v1/responses", {
+    "session-id": "priority-upgrade-session",
+  });
+  const firstMessage = nextUpstreamMessage(lowerUpstream);
+  first.socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  await firstMessage;
+  expect(authorizations[0]).toBe("Bearer lower-secret");
+
+  await env.HEALTH.getByName("higher").clear();
+  const reconnectError = nextMessage(first.socket);
+  const firstClosed = nextClose(first.socket);
+  const lowerClosed = nextUpstreamClose(lowerUpstream);
+  first.socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  expect(JSON.parse(await reconnectError as string)).toMatchObject({
+    type: "error",
+    error: { code: "websocket_reconnect_required" },
+  });
+  expect((await firstClosed).code).toBe(1012);
+  await lowerClosed;
+
+  const second = await openGatewaySocket("/v1/responses", {
+    "session-id": "priority-upgrade-session",
+  });
+  const secondMessage = nextUpstreamMessage(higherUpstream);
+  second.socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  await secondMessage;
+  expect(authorizations[1]).toBe("Bearer higher-secret");
+
+  const higherClosed = nextUpstreamClose(higherUpstream);
+  second.socket.close(1000, "done");
+  await higherClosed;
 });
 
 test("a later response.create reloads configuration and closes when WebSocket support is revoked", async () => {

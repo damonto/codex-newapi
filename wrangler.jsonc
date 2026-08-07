@@ -31,6 +31,10 @@
 				"class_name": "SessionAffinity"
 			},
 			{
+				"name": "SESSION_AFFINITY_INDEX",
+				"class_name": "SessionAffinityIndex"
+			},
+			{
 				"name": "RESPONSES_WEBSOCKET",
 				"class_name": "ResponsesWebSocketProxy"
 			}
@@ -53,6 +57,12 @@
 			"tag": "v3",
 			"new_sqlite_classes": [
 				"ResponsesWebSocketProxy"
+			]
+		},
+		{
+			"tag": "v4",
+			"new_sqlite_classes": [
+				"SessionAffinityIndex"
 			]
 		}
 	]

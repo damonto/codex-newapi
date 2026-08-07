@@ -20,6 +20,10 @@ export function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
+export function nonBlankString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
 export function parseObject(text: string): JsonObject | undefined {
   try {
     const value = JSON.parse(text) as unknown;
@@ -44,7 +48,7 @@ export function clientFrame(text: string): ClientFrame {
   const sessionId = typeof metadata === "object" &&
       metadata !== null &&
       !Array.isArray(metadata)
-    ? nonEmptyString((metadata as JsonObject).session_id)
+    ? nonBlankString((metadata as JsonObject).session_id)
     : undefined;
   return {
     kind: "response_create",

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  resolveStoredAffinity,
+  sessionAffinityIdentity,
+  SESSION_AFFINITY_TTL_MS,
+} from "../src/affinity.ts";
 import { clearConfigCacheForTests } from "../src/config.ts";
 import {
   FAILURE_THRESHOLD,
@@ -49,6 +54,25 @@ function gatewayConfig() {
 function testEnv(config) {
   const healthObjects = new Map();
   const affinities = new Map();
+  const sessionIndexes = new Map();
+  const sessionIndex = (name) => {
+    if (!sessionIndexes.has(name)) {
+      sessionIndexes.set(name, new Map());
+    }
+    return sessionIndexes.get(name);
+  };
+  const removeIndexEntry = (record) => {
+    if (!record?.registry_name || !record.session_digest || !record.binding_id) {
+      return false;
+    }
+    const index = sessionIndex(record.registry_name);
+    const current = index.get(record.session_digest);
+    if (current?.binding_id !== record.binding_id ||
+      (record.generation !== undefined && current.generation !== record.generation)) {
+      return false;
+    }
+    return index.delete(record.session_digest);
+  };
   return {
     CODEX_NEWAPI_CONFIG_KV: {
       get: async () => JSON.stringify(config),
@@ -63,24 +87,140 @@ function testEnv(config) {
     },
     SESSION_AFFINITY: {
       getByName: (name) => ({
-        resolve: async (candidates, preferred) => {
+        resolve: async (candidates, preferred, registration) => {
           const stored = affinities.get(name);
-          const isCandidate = (selection) => selection !== undefined &&
-            candidates.some((candidate) =>
-              candidate.service_id === selection.service_id &&
-              candidate.keys.some((key) => key.key_id === selection.key_id)
+          if (stored) {
+            const decision = resolveStoredAffinity(
+              stored,
+              candidates,
+              preferred,
+              () => 0,
             );
-          if (isCandidate(stored)) {
-            return { ...stored, updated_at: Date.now(), status: "hit" };
+            if (!decision.selection) {
+              affinities.delete(name);
+              removeIndexEntry(stored);
+              return undefined;
+            }
+            const now = Date.now();
+            const next = {
+              ...stored,
+              ...decision.selection,
+              updated_at: now,
+            };
+            if (decision.status === "rebound" && stored.binding_id) {
+              next.binding_id = crypto.randomUUID();
+              next.created_at = now;
+              next.generation = (stored.generation ?? 1) + 1;
+              next.index_registered = true;
+              removeIndexEntry(stored);
+              sessionIndex(stored.registry_name).set(stored.session_digest, {
+                session_digest: stored.session_digest,
+                session_id: stored.session_id,
+                binding_id: next.binding_id,
+                created_at: next.created_at,
+                generation: next.generation,
+              });
+            }
+            affinities.set(name, next);
+            return { ...next, status: decision.status };
           }
-          if (!isCandidate(preferred)) {
+          if (!preferred) {
             affinities.delete(name);
             return undefined;
           }
-          const status = stored === undefined ? "created" : "rebound";
-          const next = { ...preferred, updated_at: Date.now() };
+          const now = Date.now();
+          const next = {
+            ...preferred,
+            updated_at: now,
+            ...(registration
+              ? {
+                binding_id: crypto.randomUUID(),
+                created_at: now,
+                generation: 1,
+                registry_name: registration.registry_name,
+                session_digest: registration.session_digest,
+                session_id: registration.session_id,
+                index_registered: true,
+              }
+              : {}),
+          };
           affinities.set(name, next);
-          return { ...next, status };
+          if (registration) {
+            sessionIndex(registration.registry_name).set(registration.session_digest, {
+              session_digest: registration.session_digest,
+              session_id: registration.session_id,
+              binding_id: next.binding_id,
+              created_at: now,
+              generation: next.generation ?? 1,
+            });
+          }
+          return { ...next, status: "created" };
+        },
+        getStatus: async () => {
+          const stored = affinities.get(name);
+          return stored && stored.updated_at + SESSION_AFFINITY_TTL_MS > Date.now()
+            ? stored
+            : null;
+        },
+        clearIfBindingId: async (bindingId, generation) => {
+          const stored = affinities.get(name);
+          if (!stored || stored.binding_id !== bindingId ||
+            (generation !== undefined && (stored.generation ?? 1) !== generation)) {
+            return false;
+          }
+          affinities.delete(name);
+          return true;
+        },
+        clearManaged: async (registration) => {
+          const stored = affinities.get(name);
+          if (!stored || stored.binding_id === undefined ||
+            stored.registry_name !== registration.registry_name ||
+            stored.session_digest !== registration.session_digest ||
+            stored.session_id !== registration.session_id) {
+            return null;
+          }
+          affinities.delete(name);
+          return {
+            binding_id: stored.binding_id,
+            generation: stored.generation ?? 1,
+          };
+        },
+      }),
+    },
+    SESSION_AFFINITY_INDEX: {
+      getByName: (name) => ({
+        register: async (entry) => {
+          const index = sessionIndex(name);
+          const current = index.get(entry.session_digest);
+          if (current &&
+            (entry.generation < (current.generation ?? 1) ||
+              (entry.generation === (current.generation ?? 1) &&
+                entry.binding_id !== current.binding_id))) return current;
+          index.set(entry.session_digest, { ...entry });
+          return index.get(entry.session_digest);
+        },
+        get: async (sessionDigest) =>
+          sessionIndex(name).get(sessionDigest) ?? null,
+        listPage: async (cursor, limit) => {
+          const rows = [...sessionIndex(name).values()]
+            .filter((entry) => cursor === null || entry.session_digest > cursor)
+            .sort((left, right) => left.session_digest.localeCompare(right.session_digest));
+          const data = rows.slice(0, limit);
+          return {
+            data,
+            next_cursor: rows.length > limit
+              ? data[data.length - 1]?.session_digest ?? null
+              : null,
+          };
+        },
+        remove: async (sessionDigest, bindingId, generation) => {
+          const index = sessionIndex(name);
+          const current = index.get(sessionDigest);
+          if (current?.binding_id !== bindingId ||
+            (generation !== undefined && current.generation !== generation)) {
+            return false;
+          }
+          return index.delete(sessionDigest);
         },
       }),
     },
@@ -1484,4 +1624,288 @@ test("health endpoints reject an invalid scope", async () => {
   );
   assert.equal(list.status, 400);
   assert.equal((await list.json()).error.code, "invalid_health_scope");
+});
+
+test("authenticated clients can page, inspect, and delete only their session bindings", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.api_keys.push({ api_key: "other-client-key", services: ["primary"] });
+  const env = testEnv(config);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(null, { status: 200 });
+  const createSession = async (apiKey, sessionId) => {
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+          "session-id": sessionId,
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+  };
+
+  try {
+    for (const sessionId of ["first", "second", "path/value", "unindexed"]) {
+      await createSession("client-key", sessionId);
+    }
+    await createSession("other-client-key", "other");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const firstPage = await worker.fetch(
+    new Request("https://gateway.example/sessions?limit=2", {
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.equal(firstPage.status, 200);
+  assert.equal(firstPage.headers.get("cache-control"), "no-store");
+  const firstPayload = await firstPage.json();
+  assert.equal(firstPayload.object, "list");
+  assert.equal(firstPayload.data.length, 2);
+  assert.equal(typeof firstPayload.next_cursor, "string");
+  for (const binding of firstPayload.data) {
+    assert.equal(binding.service_id, "primary");
+    assert.equal(binding.key_id, "primary-key");
+    assert.equal(typeof binding.created_at, "number");
+    assert.equal(typeof binding.updated_at, "number");
+    assert.equal(binding.expires_at, binding.updated_at + SESSION_AFFINITY_TTL_MS);
+  }
+
+  const secondPage = await worker.fetch(
+    new Request(
+      `https://gateway.example/v1/sessions?limit=2&cursor=${encodeURIComponent(firstPayload.next_cursor)}`,
+      { headers: { authorization: "Bearer client-key" } },
+    ),
+    env,
+    {},
+  );
+  const secondPayload = await secondPage.json();
+  assert.equal(secondPayload.next_cursor, null);
+  assert.deepEqual(
+    new Set([...firstPayload.data, ...secondPayload.data].map((entry) => entry.session_id)),
+    new Set(["first", "second", "path/value", "unindexed"]),
+  );
+
+  const isolated = await worker.fetch(
+    new Request("https://gateway.example/v1/sessions", {
+      headers: { authorization: "Bearer other-client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.deepEqual(
+    (await isolated.json()).data.map((entry) => entry.session_id),
+    ["other"],
+  );
+
+  const unindexedIdentity = await sessionAffinityIdentity("client-key", "unindexed");
+  const unindexedRegistry = env.SESSION_AFFINITY_INDEX.getByName(
+    unindexedIdentity.registry_name,
+  );
+  const unindexedEntry = await unindexedRegistry.get(unindexedIdentity.session_digest);
+  assert.ok(unindexedEntry);
+  assert.equal(await unindexedRegistry.remove(
+    unindexedIdentity.session_digest,
+    unindexedEntry.binding_id,
+    unindexedEntry.generation,
+  ), true);
+  const removedUnindexed = await worker.fetch(
+    new Request("https://gateway.example/sessions/unindexed", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.deepEqual(await removedUnindexed.json(), {
+    session_id: "unindexed",
+    deleted: 1,
+  });
+
+  const encodedSessionId = encodeURIComponent("path/value");
+  const removed = await worker.fetch(
+    new Request(`https://gateway.example/v1/sessions/${encodedSessionId}`, {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.deepEqual(await removed.json(), {
+    session_id: "path/value",
+    deleted: 1,
+  });
+  const repeated = await worker.fetch(
+    new Request(`https://gateway.example/sessions/${encodedSessionId}`, {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.deepEqual(await repeated.json(), {
+    session_id: "path/value",
+    deleted: 0,
+  });
+
+  const cleared = await worker.fetch(
+    new Request("https://gateway.example/sessions", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.equal(cleared.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await cleared.json(), { deleted: 2 });
+  const empty = await worker.fetch(
+    new Request("https://gateway.example/v1/sessions", {
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.deepEqual((await empty.json()).data, []);
+});
+
+test("a stale indexed delete protects the replacement and remains retryable", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  const env = testEnv(config);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(null, { status: 200 });
+  try {
+    const create = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+          "session-id": "stale-index-session",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      env,
+      {},
+    );
+    assert.equal(create.status, 200);
+
+    const identity = await sessionAffinityIdentity(
+      "client-key",
+      "stale-index-session",
+    );
+    const affinity = env.SESSION_AFFINITY.getByName(identity.object_name);
+    const current = await affinity.getStatus();
+    assert.ok(current?.binding_id);
+    const index = env.SESSION_AFFINITY_INDEX.getByName(identity.registry_name);
+    assert.equal(await index.remove(
+      identity.session_digest,
+      current.binding_id,
+      current.generation,
+    ), true);
+    await index.register({
+      session_digest: identity.session_digest,
+      session_id: identity.session_id,
+      binding_id: "stale-binding",
+      created_at: current.created_at,
+      generation: Math.max(1, (current.generation ?? 1) - 1),
+    });
+
+    const deleted = await worker.fetch(
+      new Request("https://gateway.example/sessions/stale-index-session", {
+        method: "DELETE",
+        headers: { authorization: "Bearer client-key" },
+      }),
+      env,
+      {},
+    );
+    assert.deepEqual(await deleted.json(), {
+      session_id: "stale-index-session",
+      deleted: 0,
+    });
+    assert.notEqual(await affinity.getStatus(), null);
+    assert.equal(await index.get(identity.session_digest), null);
+
+    // The failed conditional delete is safe to retry after the stale index
+    // row has been removed; the missing-index path can then clear the current
+    // managed record by its registration metadata.
+    const retried = await worker.fetch(
+      new Request("https://gateway.example/sessions/stale-index-session", {
+        method: "DELETE",
+        headers: { authorization: "Bearer client-key" },
+      }),
+      env,
+      {},
+    );
+    assert.deepEqual(await retried.json(), {
+      session_id: "stale-index-session",
+      deleted: 1,
+    });
+    assert.equal(await affinity.getStatus(), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("session endpoints validate methods, pagination, authentication, and session ids", async () => {
+  clearConfigCacheForTests();
+  const env = testEnv(gatewayConfig());
+  const wrongMethod = await worker.fetch(
+    new Request("https://gateway.example/sessions", { method: "POST" }),
+    env,
+    {},
+  );
+  assert.equal(wrongMethod.status, 405);
+
+  const unauthorized = await worker.fetch(
+    new Request("https://gateway.example/v1/sessions"),
+    env,
+    {},
+  );
+  assert.equal(unauthorized.status, 401);
+
+  for (const search of ["?limit=", "?limit=0", "?limit=1001", "?cursor=invalid"]) {
+    const response = await worker.fetch(
+      new Request(`https://gateway.example/sessions${search}`, {
+        headers: { authorization: "Bearer client-key" },
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, "invalid_session_list_query");
+  }
+
+  const invalidSession = await worker.fetch(
+    new Request("https://gateway.example/v1/sessions/", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.equal(invalidSession.status, 400);
+  assert.equal((await invalidSession.json()).error.code, "invalid_session_id");
+
+  const paddedSessionId = await worker.fetch(
+    new Request("https://gateway.example/sessions/%20padded%20", {
+      method: "DELETE",
+      headers: { authorization: "Bearer client-key" },
+    }),
+    env,
+    {},
+  );
+  assert.deepEqual(await paddedSessionId.json(), {
+    session_id: " padded ",
+    deleted: 0,
+  });
 });

@@ -12,7 +12,8 @@ Use several NewAPI services through one Cloudflare Workers endpoint. It works wi
 - Supports client-facing model routes with optional service constraints.
 - Supports Codex Image Gen through configured `gpt-image-2` services.
 - Proxies Codex Responses WebSockets, standalone search, and remote compaction.
-- Keeps a session on the same service/key while that target remains available.
+- Keeps a session on the same service/key while it remains the highest-priority available target.
+- Lists and clears session bindings through authenticated management endpoints.
 - Can retry selected status codes with a separate policy for each service.
 
 ## Quick setup
@@ -97,7 +98,7 @@ npm run deploy
 ```
 
 - `services`: upstream services and the models they provide. Higher priority wins.
-- `services[].keys`: upstream credentials for one service. The highest-priority available key group is used; equal priorities are selected uniformly at random.
+- `services[].keys`: upstream credentials for one service. The highest-priority available key is used; equal priorities follow configuration order.
 - `services[].supports_websocket`: whether the service can receive Responses WebSocket connections. Defaults to `false` when omitted.
 - `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests. Defaults to `false` when omitted.
 - `api_keys`: keys used by your clients and the services each key may access.
@@ -106,11 +107,17 @@ npm run deploy
 
 When a route omits `services`, all client-authorized services that list its upstream model are eligible. When `services` is present, it is intersected with the client API key's allowed services. Unconfigured model names are forwarded directly.
 
-Standalone search selects only services with `supports_web_search: true`. Responses WebSocket connections select only services with `supports_websocket: true`. These filters are applied before random selection and session affinity; ordinary HTTP Responses and compact requests do not require either capability.
+Standalone search selects only services with `supports_web_search: true`. Responses WebSocket connections select only services with `supports_websocket: true`. These filters are applied before priority selection and session affinity; ordinary HTTP Responses and compact requests do not require either capability.
 
-Services are considered by highest available priority, with equal-priority services selected uniformly at random. A session ID from the `session-id` header or `client_metadata.session_id` keeps subsequent requests on the same service/key while that target remains eligible and healthy. Standalone search also accepts its top-level `id` as the lowest-priority session identifier. `thread-id` is not used for affinity.
+Services are considered by highest available priority, with equal-priority services following configuration order. A session ID from the `session-id` header or `client_metadata.session_id` keeps subsequent requests on the same service/key while that target remains eligible, healthy, and at the highest available priority. If a higher-priority service becomes available, the next request moves the binding to the highest-priority service and one of its highest-priority keys. If the current service remains highest priority but a higher-priority key becomes available within it, the binding moves to that key. Equal priorities do not move an existing binding. Standalone search also accepts its top-level `id` as the lowest-priority session identifier. `thread-id` is not used for affinity.
 
 HTTP 402 and 403 responses immediately cool only the selected key for 30 minutes. Configured retries still use that same key and never switch service/key during the current request; the cooldown affects later requests. Service and key inference cooldowns can be listed with `GET /health`, cleared with `DELETE /health/{service_id}` or `DELETE /health/{service_id}/{key_id}`, and isolated catalog cooldowns use `scope=catalog`.
+
+Session bindings are isolated by the authenticated client API key and can be managed through both versioned and unversioned paths:
+
+- `GET /sessions` lists bindings. `limit` defaults to 100 and may be set from 1 to 1000; pass the returned opaque `next_cursor` as `cursor` to continue.
+- `DELETE /sessions` clears all bindings visible to the authenticated API key and returns the number deleted.
+- `DELETE /sessions/{session_id}` clears one URL-encoded session ID. Missing bindings return `deleted: 0`.
 
 Every service must declare a non-empty `keys` array, although all entries may be disabled to take that service out of routing. The former `services[].api_key` field is no longer accepted.
 

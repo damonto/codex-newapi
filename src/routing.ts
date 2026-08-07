@@ -10,12 +10,12 @@ import {
 } from "./health.ts";
 import { errorMessage } from "./log.ts";
 import {
-  affinityObjectName,
   chooseAffinityCandidate,
+  sessionAffinityIdentity,
   type AffinityRandomSource,
   type AffinityServiceCandidate,
 } from "./affinity.ts";
-import { randomEntry, secureRandomUnit } from "./random.ts";
+import { randomEntry } from "./random.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
@@ -93,14 +93,15 @@ interface RouteAvailability {
 
 export function selectServiceApiKey(
   service: ServiceConfig,
-  random: AffinityRandomSource = secureRandomUnit,
+  random?: AffinityRandomSource,
 ): ServiceApiKeyConfig | undefined {
   const enabled = service.keys.filter((key) => !key.disabled);
   if (enabled.length === 0) {
     return undefined;
   }
   const priority = Math.max(...enabled.map((key) => key.priority));
-  return randomEntry(enabled.filter((key) => key.priority === priority), random);
+  const tied = enabled.filter((key) => key.priority === priority);
+  return random === undefined ? tied[0] : randomEntry(tied, random);
 }
 
 export function serviceSupportsModel(
@@ -253,7 +254,7 @@ function targetByIds(
 
 function selectRandomTarget(
   candidates: RoutedService[],
-  random: AffinityRandomSource,
+  random?: AffinityRandomSource,
 ): ServiceTarget | undefined {
   const selected = chooseAffinityCandidate(affinityCandidates(candidates), random);
   return selected
@@ -282,16 +283,17 @@ export async function selectAvailableServiceWithDetails(
     const candidates = affinityCandidates(availability.candidates);
     const preferred = chooseAffinityCandidate(
       candidates,
-      options.random ?? secureRandomUnit,
+      options.random,
     );
     try {
-      const name = await affinityObjectName(
+      const identity = await sessionAffinityIdentity(
         options.session.clientApiKey,
         options.session.sessionId,
       );
-      const resolution = await env.SESSION_AFFINITY.getByName(name).resolve(
+      const resolution = await env.SESSION_AFFINITY.getByName(identity.object_name).resolve(
         candidates,
         preferred,
+        identity,
       );
       if (!resolution) {
         throw new Error("session affinity returned no candidate");
@@ -329,7 +331,7 @@ export async function selectAvailableServiceWithDetails(
   return {
     target: selectRandomTarget(
       availability.candidates,
-      options.random ?? secureRandomUnit,
+      options.random,
     ),
     checks: availability.checks,
     keyChecks: availability.keyChecks,
@@ -347,7 +349,7 @@ export async function selectAvailableService(
 export async function selectAvailableCatalogTargetsWithDetails(
   env: Env,
   routedServices: RoutedService[],
-  random: AffinityRandomSource = secureRandomUnit,
+  random?: AffinityRandomSource,
 ): Promise<CatalogSelection> {
   const availability = await evaluateAvailability(env, routedServices, "catalog");
   const targets = availability.candidates.flatMap(({ service, keys }) => {

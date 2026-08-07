@@ -138,10 +138,10 @@ test("session identifiers use header, metadata, then search id precedence", () =
       new Request("https://gateway.example/v1/responses", {
         headers: { "thread-id": "thread-only" },
       }),
-      { model: "model", client_metadata: { session_id: "metadata" } },
+      { model: "model", client_metadata: { session_id: " metadata " } },
       "responses",
     ),
-    "metadata",
+    " metadata ",
   );
   assert.equal(
     sessionIdForInference(

@@ -39,6 +39,7 @@ import {
   errorStatus,
   gatewayErrorEvent,
   messageBytes,
+  nonBlankString,
   nonEmptyString,
   normalizeMessage,
   parseObject,
@@ -193,6 +194,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     }
 
     const forwardedHeaders = forwardableWebSocketHeaders(request);
+    const headerSessionId = nonBlankString(request.headers.get("session-id"));
     const state: StoredWebSocketSession = {
       version: 1,
       phase: "awaiting_first_frame",
@@ -202,8 +204,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       incoming_search: new URL(request.url).search,
       forwarded_headers: [...forwardedHeaders.entries()],
       client_api_key_digest: clientDigest,
-      ...(nonEmptyString(request.headers.get("session-id"))
-        ? { header_session_id: nonEmptyString(request.headers.get("session-id")) }
+      ...(headerSessionId
+        ? { header_session_id: headerSessionId }
         : {}),
       active_response: false,
       response_outcome_recorded: false,

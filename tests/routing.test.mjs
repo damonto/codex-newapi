@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { resolveStoredAffinity } from "../src/affinity.ts";
 import { parseConfig } from "../src/config.ts";
 import { FAILURE_THRESHOLD, ServiceHealthState } from "../src/health.ts";
 import {
@@ -75,22 +76,32 @@ function routingEnvironment() {
         getByName: (name) => ({
           resolve: async (candidates, preferred) => {
             const stored = affinities.get(name);
-            const isCandidate = (selection) => selection !== undefined &&
-              candidates.some((service) =>
-                service.service_id === selection.service_id &&
-                service.keys.some((key) => key.key_id === selection.key_id)
+            if (stored) {
+              const decision = resolveStoredAffinity(
+                stored,
+                candidates,
+                preferred,
+                () => 0,
               );
-            if (isCandidate(stored)) {
-              return { ...stored, updated_at: Date.now(), status: "hit" };
+              if (!decision.selection) {
+                affinities.delete(name);
+                return undefined;
+              }
+              const next = {
+                ...stored,
+                ...decision.selection,
+                updated_at: Date.now(),
+              };
+              affinities.set(name, next);
+              return { ...next, status: decision.status };
             }
-            if (!isCandidate(preferred)) {
+            if (!preferred) {
               affinities.delete(name);
               return undefined;
             }
-            const status = stored === undefined ? "created" : "rebound";
             const next = { ...preferred, updated_at: Date.now() };
             affinities.set(name, next);
-            return { ...next, status };
+            return { ...next, status: "created" };
           },
         }),
       },
@@ -118,6 +129,7 @@ test("equal service key priorities are selected from the full tie group", () => 
     ...config.services[1],
     keys: config.services[1].keys.map((key) => ({ ...key, priority: 50 })),
   };
+  assert.equal(selectServiceApiKey(service).id, "primary-backup");
   assert.equal(selectServiceApiKey(service, () => 0).id, "primary-backup");
   assert.equal(selectServiceApiKey(service, () => 0.999999).id, "primary-key");
 });
@@ -344,6 +356,10 @@ test("service-first and key-second random selection use independent tie boundari
   const route = resolveModelRoute(equalConfig, equalConfig.api_keys[0], "model");
   const { env } = routingEnvironment();
 
+  const defaultSelection = await selectAvailableServiceWithDetails(env, route);
+  assert.equal(defaultSelection.target.service.id, "first");
+  assert.equal(defaultSelection.target.key.id, "first-a");
+
   const values = [0.999999, 0];
   const selection = await selectAvailableServiceWithDetails(env, route, {
     random: () => values.shift(),
@@ -483,6 +499,100 @@ test("session affinity is stable, client-isolated, and rebinds after key cooldow
   assert.deepEqual(
     [rebound.target.service.id, rebound.target.key.id, rebound.affinity.status],
     ["first", "first-a", "rebound"],
+  );
+});
+
+test("session affinity upgrades when a higher-priority service recovers", async () => {
+  const { env, healthObject } = routingEnvironment();
+  for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
+    healthObject("primary").recordFailure();
+  }
+  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
+  const session = { clientApiKey: "client", sessionId: "service-upgrade" };
+  const initial = await selectAvailableServiceWithDetails(env, route, {
+    random: () => 0,
+    session,
+  });
+  assert.deepEqual(
+    [initial.target.service.id, initial.affinity.status],
+    ["secondary", "created"],
+  );
+
+  healthObject("primary").clear();
+  const upgraded = await selectAvailableServiceWithDetails(env, route, {
+    random: () => 0,
+    session,
+  });
+  assert.deepEqual(
+    [upgraded.target.service.id, upgraded.target.key.id, upgraded.affinity.status],
+    ["primary", "primary-key", "rebound"],
+  );
+});
+
+test("session affinity upgrades a key only inside its current top-priority service", async () => {
+  const { env, healthObject } = routingEnvironment();
+  healthObject("key:primary:primary-key").recordImmediateFailure();
+  const route = resolveModelRoute(config, client, "gpt-5.6-sol");
+  const session = { clientApiKey: "client", sessionId: "key-upgrade" };
+  const initial = await selectAvailableServiceWithDetails(env, route, {
+    random: () => 0,
+    session,
+  });
+  assert.deepEqual(
+    [initial.target.service.id, initial.target.key.id, initial.affinity.status],
+    ["primary", "primary-backup", "created"],
+  );
+
+  healthObject("key:primary:primary-key").clear();
+  const upgraded = await selectAvailableServiceWithDetails(env, route, {
+    random: () => 0,
+    session,
+  });
+  assert.deepEqual(
+    [upgraded.target.service.id, upgraded.target.key.id, upgraded.affinity.status],
+    ["primary", "primary-key", "rebound"],
+  );
+});
+
+test("equal service and key priorities do not churn an existing affinity", async () => {
+  const equalConfig = parseConfig({
+    services: [
+      {
+        id: "first",
+        base_url: "https://first.example/v1",
+        keys: [{ id: "first-key", api_key: "first", disabled: false, priority: 10 }],
+        disabled: false,
+        priority: 50,
+        models: ["model"],
+      },
+      {
+        id: "second",
+        base_url: "https://second.example/v1",
+        keys: [{ id: "second-key", api_key: "second", disabled: false, priority: 10 }],
+        disabled: false,
+        priority: 50,
+        models: ["model"],
+      },
+    ],
+    api_keys: [{ api_key: "client", services: ["first", "second"] }],
+    model_routes: {},
+  });
+  const { env } = routingEnvironment();
+  const route = resolveModelRoute(equalConfig, equalConfig.api_keys[0], "model");
+  const session = { clientApiKey: "client", sessionId: "equal-priority" };
+  const initial = await selectAvailableServiceWithDetails(env, route, {
+    random: () => 0.999999,
+    session,
+  });
+  assert.equal(initial.target.service.id, "second");
+
+  const repeated = await selectAvailableServiceWithDetails(env, route, {
+    random: () => 0,
+    session,
+  });
+  assert.deepEqual(
+    [repeated.target.service.id, repeated.affinity.status],
+    ["second", "hit"],
   );
 });
 
