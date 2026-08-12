@@ -56,6 +56,66 @@ test("parseConfig normalizes and validates a complete configuration", () => {
     model: "review-model",
     services: ["primary"],
   });
+  assert.deepEqual(config.web_search, { mode: "proxy" });
+});
+
+test("parseConfig selects an explicit web search mode", () => {
+  for (const [mode, baseUrl] of [
+    ["tavily", "https://api.tavily.com"],
+    ["exa", "https://api.exa.ai"],
+  ]) {
+    const input = validConfig();
+    input.web_search = { mode, api_key: `${mode}-key` };
+    assert.deepEqual(parseConfig(input).web_search, {
+      mode,
+      base_url: baseUrl,
+      api_key: `${mode}-key`,
+      max_results: mode === "tavily" ? 5 : 10,
+    });
+  }
+});
+
+test("parseConfig accepts provider-specific web search result limits", () => {
+  for (const [mode, maxResults] of [
+    ["tavily", 0],
+    ["exa", 100],
+  ]) {
+    const input = validConfig();
+    input.web_search = {
+      mode,
+      api_key: `${mode}-key`,
+      max_results: maxResults,
+    };
+    assert.equal(parseConfig(input).web_search.max_results, maxResults);
+  }
+});
+
+test("parseConfig validates explicit web search settings", () => {
+  const cases = [
+    ["web_search.mode must be proxy or one of: tavily, exa", { mode: "fallback" }],
+    ["web_search.api_key must be a non-empty string", { mode: "tavily" }],
+    [
+      "web_search.max_results must be between 0 and 20 for tavily",
+      { mode: "tavily", api_key: "tavily-key", max_results: 21 },
+    ],
+    [
+      "web_search.max_results must be between 1 and 100 for exa",
+      { mode: "exa", api_key: "exa-key", max_results: 0 },
+    ],
+    [
+      "web_search.api_key is only supported for Tavily or Exa mode",
+      { mode: "proxy", api_key: "unexpected" },
+    ],
+    ["web_search.extra is not supported", { mode: "proxy", extra: true }],
+  ];
+  for (const [message, webSearch] of cases) {
+    const input = validConfig();
+    input.web_search = webSearch;
+    assert.throws(
+      () => parseConfig(input),
+      (error) => error instanceof ConfigError && error.message === message,
+    );
+  }
 });
 
 test("parseConfig accepts explicit service capability flags", () => {

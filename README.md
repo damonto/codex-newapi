@@ -11,7 +11,7 @@ Use several NewAPI services through one Cloudflare Workers endpoint. It works wi
 - Supports multiple upstream API keys per service with independent cooldowns.
 - Supports client-facing model routes with optional service constraints.
 - Supports Codex Image Gen through configured `gpt-image-2` services.
-- Proxies Codex Responses WebSockets, standalone search, and remote compaction.
+- Proxies Codex Responses WebSockets and remote compaction, and can proxy or adapt standalone search.
 - Keeps a session on the same service/key while it remains the highest-priority available target.
 - Lists and clears session bindings through authenticated management endpoints.
 - Can retry selected status codes with a separate policy for each service.
@@ -94,6 +94,9 @@ npm run deploy
       "model": "grok-4.5",
       "services": ["primary"]
     }
+  },
+  "web_search": {
+    "mode": "proxy"
   }
 }
 ```
@@ -101,18 +104,68 @@ npm run deploy
 - `services`: upstream services and the models they provide. Higher priority wins.
 - `services[].keys`: upstream credentials for one service. The highest-priority available key is used; equal priorities follow configuration order.
 - `services[].supports_websocket`: whether the service can receive Responses WebSocket connections. Defaults to `false` when omitted.
-- `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests. Defaults to `false` when omitted.
+- `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests in `proxy` mode. Defaults to `false` when omitted.
 - `api_keys`: keys used by your clients and the services each key may access. Each entry requires a globally unique, non-sensitive `id`.
 - `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services.
+- `web_search.mode`: selects standalone search behavior. `proxy` (the default) forwards `/v1/alpha/search` to a `supports_web_search` NewAPI service; `tavily` and `exa` call the configured provider directly and never fall back to proxy.
+- `web_search.base_url`: optional provider base URL. Defaults to `https://api.tavily.com` or `https://api.exa.ai` for adapter modes.
+- `web_search.api_key`: provider credential. Keep it in the KV configuration and out of source-controlled example files.
+- `web_search.max_results`: maximum results requested from the configured adapter. Tavily accepts 0 to 20 (default 5); Exa accepts 1 to 100 (default 10).
 - `retry`: optional status codes and delays. Each delay adds one retry; omitting this field disables retries.
 
 Existing configurations must add an `id` to every `api_keys` entry before they can be validated or loaded.
 
 When a route omits `services`, all client-authorized services that list its upstream model are eligible. When `services` is present, it is intersected with the client API key's allowed services. Unconfigured model names are forwarded directly.
 
-Standalone search selects only services with `supports_web_search: true`. Responses WebSocket connections select only services with `supports_websocket: true`. These filters are applied before priority selection and session affinity; ordinary HTTP Responses and compact requests do not require either capability.
+In `proxy` mode, standalone search selects only services with `supports_web_search: true`. Responses WebSocket connections select only services with `supports_websocket: true`. These filters are applied before priority selection and session affinity; ordinary HTTP Responses and compact requests do not require either capability.
 
-Services are considered by highest available priority, with equal-priority services following configuration order. A session ID from the `session-id` header or `client_metadata.session_id` keeps subsequent requests on the same service/key while that target remains eligible, healthy, and at the highest available priority. If a higher-priority service becomes available, the next request moves the binding to the highest-priority service and one of its highest-priority keys. If the current service remains highest priority but a higher-priority key becomes available within it, the binding moves to that key. Equal priorities do not move an existing binding. Standalone search also accepts its top-level `id` as the lowest-priority session identifier. `thread-id` is not used for affinity.
+Services are considered by highest available priority, with equal-priority services following configuration order. A session ID from the `session-id` header or `client_metadata.session_id` keeps subsequent requests on the same service/key while that target remains eligible, healthy, and at the highest available priority. If a higher-priority service becomes available, the next request moves the binding to the highest-priority service and one of its highest-priority keys. If the current service remains highest priority but a higher-priority key becomes available within it, the binding moves to that key. Equal priorities do not move an existing binding. In `proxy` mode, standalone search also accepts its top-level `id` as the lowest-priority session identifier. `thread-id` is not used for affinity.
+
+### Standalone web search
+
+Choose exactly one global search mode. Omitting `web_search` preserves the existing `proxy` behavior.
+
+To forward `/v1/alpha/search` unchanged to NewAPI, enable search on the eligible services and select `proxy`:
+
+```json
+{
+  "web_search": {
+    "mode": "proxy"
+  }
+}
+```
+
+At least one client-authorized service for the requested model must also set `supports_web_search: true`.
+
+To adapt Codex search requests to Tavily:
+
+```json
+{
+  "web_search": {
+    "mode": "tavily",
+    "api_key": "tvly-your-private-key",
+    "max_results": 5
+  }
+}
+```
+
+To adapt them to Exa:
+
+```json
+{
+  "web_search": {
+    "mode": "exa",
+    "api_key": "your-private-exa-key",
+    "max_results": 10
+  }
+}
+```
+
+Adapter modes call only the selected provider. They do not try NewAPI after a 404 or any other provider failure, and they do not switch between Tavily and Exa. `base_url` may be set for a compatible proxy; otherwise it defaults to `https://api.tavily.com` or `https://api.exa.ai`.
+
+Tavily and Exa modes support `commands.search_query` with up to four queries, including per-query `domains` and `recency` from 0 to 3650 days, plus global allowed/blocked domain filters. Tavily accepts up to 300 included and 150 excluded domains; Exa accepts up to 1200 of each. Codex commands that require a full browsing backend, including `image_query`, `open`, `click`, `find`, and `screenshot`, return `unsupported_search_command`. Unknown command, query, setting, and filter fields are rejected instead of being silently ignored. Codex `allowed_callers` and `external_web_access` metadata are validated but do not change the provider selected by the gateway configuration. The requested model must still be available to the authenticated client API key, but adapter requests do not participate in service health, retries, or session affinity.
+
+Adapter responses are limited to 2 MiB per query and 4 MiB for the complete request batch. At most two provider queries run concurrently; crossing either response budget cancels the remaining batch and returns `web_search_invalid_response`.
 
 HTTP 402 and 403 responses immediately cool only the selected key for 30 minutes. Configured retries still use that same key and never switch service/key during the current request; the cooldown affects later requests. Service and key inference cooldowns can be listed with `GET /health`, cleared with `DELETE /health/{service_id}` or `DELETE /health/{service_id}/{key_id}`, and isolated catalog cooldowns use `scope=catalog`.
 

@@ -3,9 +3,11 @@
 	"name": "codex-newapi",
 	"main": "src/worker.ts",
 	"compatibility_date": "2026-07-24",
+	"compatibility_flags": ["nodejs_compat"],
 	"workers_dev": true,
 	"observability": {
-		"enabled": true
+		"enabled": true,
+		"head_sampling_rate": 0.1
 	},
 	"vars": {
 		"CONFIG_KEY": "gateway-config",

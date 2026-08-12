@@ -197,6 +197,86 @@
           }
         }
       }
+    },
+    "web_search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["proxy", "tavily", "exa"],
+          "default": "proxy"
+        },
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://"
+        },
+        "api_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_results": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "mode": { "const": "proxy" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["base_url"] },
+                { "required": ["api_key"] },
+                { "required": ["max_results"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "mode": { "enum": ["tavily", "exa"] } },
+            "required": ["mode"]
+          },
+          "then": { "required": ["api_key"] }
+        },
+        {
+          "if": {
+            "properties": { "mode": { "const": "tavily" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "max_results": {
+                "minimum": 0,
+                "maximum": 20,
+                "default": 5
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "mode": { "const": "exa" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "max_results": {
+                "minimum": 1,
+                "maximum": 100,
+                "default": 10
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

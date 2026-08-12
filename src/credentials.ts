@@ -12,6 +12,9 @@ export function upstreamApiKeyValues(
   const values = config.services.flatMap((service) =>
     service.keys.map((key) => key.api_key)
   );
-  upstreamApiKeysByConfig.set(config, values);
-  return values;
+  const allValues = config.web_search.mode === "proxy"
+    ? values
+    : [...values, config.web_search.api_key];
+  upstreamApiKeysByConfig.set(config, allValues);
+  return allValues;
 }

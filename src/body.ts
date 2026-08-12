@@ -28,6 +28,7 @@ export async function readBodyWithinLimit(
   body: ReadableStream<Uint8Array> | null,
   maxBytes: number,
   contentLength?: string | null,
+  onChunk?: (byteLength: number) => void,
 ): Promise<Uint8Array<ArrayBuffer>> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
     throw new RangeError("maxBytes must be a non-negative safe integer");
@@ -62,6 +63,7 @@ export async function readBodyWithinLimit(
         }
         throw new BodyTooLargeError(maxBytes);
       }
+      onChunk?.(value.byteLength);
       if (requiredBytes > buffer.byteLength) {
         const doubledCapacity = Math.max(1, buffer.byteLength * 2);
         const nextCapacity = Math.min(
@@ -75,6 +77,13 @@ export async function readBodyWithinLimit(
       buffer.set(value, totalBytes);
       totalBytes = requiredBytes;
     }
+  } catch (error) {
+    try {
+      await reader.cancel();
+    } catch {
+      // Preserve the original read or limit error.
+    }
+    throw error;
   } finally {
     reader.releaseLock();
   }

@@ -33,10 +33,22 @@ export interface ModelRouteConfig {
   services?: string[];
 }
 
+export type WebSearchMode = "proxy" | "tavily" | "exa";
+
+export interface WebSearchProviderConfig {
+  mode: Exclude<WebSearchMode, "proxy">;
+  base_url: string;
+  api_key: string;
+  max_results: number;
+}
+
+export type WebSearchConfig = { mode: "proxy" } | WebSearchProviderConfig;
+
 export interface GatewayConfig {
   services: ServiceConfig[];
   api_keys: ClientApiKeyConfig[];
   model_routes: Record<string, ModelRouteConfig>;
+  web_search: WebSearchConfig;
 }
 
 export interface ServiceHealthSnapshot {

@@ -5,8 +5,14 @@ import type {
   ServiceApiKeyConfig,
   ServiceConfig,
   ServiceRetryConfig,
+  WebSearchConfig,
 } from "./types.ts";
 import { errorMessage, type RequestLogContext } from "./log.ts";
+import {
+  isWebSearchProviderMode,
+  WEB_SEARCH_PROVIDER_MODES,
+  webSearchProviderFor,
+} from "./search-providers/index.ts";
 
 const DEFAULT_CONFIG_KEY = "gateway-config";
 const DEFAULT_CACHE_TTL_SECONDS = 10;
@@ -18,6 +24,7 @@ const ROOT_FIELDS = new Set([
   "services",
   "api_keys",
   "model_routes",
+  "web_search",
 ]);
 const SERVICE_FIELDS = new Set([
   "id",
@@ -39,6 +46,7 @@ const SERVICE_API_KEY_FIELDS = new Set([
 const API_KEY_FIELDS = new Set(["id", "api_key", "services"]);
 const MODEL_ROUTE_FIELDS = new Set(["model", "services"]);
 const RETRY_FIELDS = new Set(["status_codes", "delays_ms"]);
+const WEB_SEARCH_FIELDS = new Set(["mode", "base_url", "api_key", "max_results"]);
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -47,6 +55,7 @@ export class ConfigError extends Error {
   }
 }
 
+// Successful KV reads are cached per isolate only; this never stores request-scoped state.
 let cached: { config: GatewayConfig; expiresAt: number } | undefined;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -158,6 +167,45 @@ function parseRetry(value: unknown, path: string): ServiceRetryConfig | undefine
     );
   }
   return { status_codes: statusCodes, delays_ms: delaysMs };
+}
+
+function parseWebSearch(value: unknown): WebSearchConfig {
+  if (value === undefined) {
+    return { mode: "proxy" };
+  }
+  const path = "web_search";
+  if (!isRecord(value)) {
+    throw new ConfigError(`${path} must be an object`);
+  }
+  rejectUnknownFields(value, WEB_SEARCH_FIELDS, path);
+  const mode = requiredString(value.mode, `${path}.mode`);
+  if (mode !== "proxy" && !isWebSearchProviderMode(mode)) {
+    throw new ConfigError(
+      `${path}.mode must be proxy or one of: ${WEB_SEARCH_PROVIDER_MODES.join(", ")}`,
+    );
+  }
+  if (mode === "proxy") {
+    for (const field of ["base_url", "api_key", "max_results"]) {
+      if (value[field] !== undefined) {
+        throw new ConfigError(`${path}.${field} is only supported for Tavily or Exa mode`);
+      }
+    }
+    return { mode };
+  }
+  const provider = webSearchProviderFor(mode);
+  const baseUrl = value.base_url === undefined
+    ? provider.defaultBaseUrl
+    : validateBaseUrl(requiredString(value.base_url, `${path}.base_url`), `${path}.base_url`);
+  const apiKey = requiredString(value.api_key, `${path}.api_key`);
+  const maxResults = value.max_results === undefined
+    ? provider.maxResults.default
+    : requiredInteger(value.max_results, `${path}.max_results`);
+  if (maxResults < provider.maxResults.min || maxResults > provider.maxResults.max) {
+    throw new ConfigError(
+      `${path}.max_results must be between ${provider.maxResults.min} and ${provider.maxResults.max} for ${mode}`,
+    );
+  }
+  return { mode, base_url: baseUrl, api_key: apiKey, max_results: maxResults };
 }
 
 function validateBaseUrl(value: string, path: string): string {
@@ -322,6 +370,7 @@ export function parseConfig(value: unknown): GatewayConfig {
   }
 
   const modelRoutes = parseModelRoutes(value.model_routes);
+  const webSearch = parseWebSearch(value.web_search);
   const knownUpstreamModels = new Set(services.flatMap((service) => service.models));
   const servicesById = new Map(services.map((service) => [service.id, service]));
   for (const [clientModel, route] of Object.entries(modelRoutes)) {
@@ -349,6 +398,7 @@ export function parseConfig(value: unknown): GatewayConfig {
     services,
     api_keys: apiKeys,
     model_routes: modelRoutes,
+    web_search: webSearch,
   };
 }
 

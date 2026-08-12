@@ -511,6 +511,47 @@ test("alpha search does not forward when no service declares web search support"
   assert.equal(calls, 0);
 });
 
+test("configured Tavily search returns a provider 404 without NewAPI fallback", async () => {
+  clearConfigCacheForTests();
+  const config = gatewayConfig();
+  config.web_search = {
+    mode: "tavily",
+    base_url: "https://tavily.example",
+    api_key: "tavily-key",
+    max_results: 4,
+  };
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    urls.push(request.url);
+    return Response.json({ detail: { error: "not found" } }, { status: 404 });
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/alpha/search", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.6-sol",
+          commands: { search_query: [{ q: "docs" }] },
+        }),
+      }),
+      testEnv(config),
+      {},
+    );
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).error.code, "web_search_upstream_error");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(urls, ["https://tavily.example/search"]);
+});
+
 test("new HTTP forwarding endpoints accept POST only", async () => {
   clearConfigCacheForTests();
   const env = testEnv(gatewayConfig());

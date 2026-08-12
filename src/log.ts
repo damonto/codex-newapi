@@ -20,6 +20,7 @@ const QUERY_SECRET_PATTERN = /([?&](?:api[-_]?key|token|access[-_]?token|refresh
 const ASSIGNMENT_SECRET_PATTERN = /((?:["']?(?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization|credential)s?["']?)\s*[:=]\s*["']?)[^"'\s,}&]+/gi;
 const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9._-]{7,}\b/g;
 
+// This isolate-local setting is refreshed from env at the start of every request.
 let currentLogLevel: LogLevel = "info";
 
 export function configureLogging(value: unknown): LogLevel {

@@ -64,6 +64,7 @@ function gatewayConfig(): GatewayConfig {
       models: ["upstream-model", "other-model"],
     }],
     api_keys: [{ id: "client", api_key: "client-secret", services: ["primary"] }],
+    web_search: { mode: "proxy" },
     model_routes: {
       "client-model": { model: "upstream-model" },
     },

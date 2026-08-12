@@ -14,6 +14,7 @@ import {
 } from "./log.ts";
 import { handleModels } from "./models.ts";
 import { handleInference, type InferencePath } from "./proxy.ts";
+import { handleConfiguredWebSearch } from "./search.ts";
 import {
   decodeSessionIdPath,
   handleSessionClearAll,
@@ -286,6 +287,9 @@ async function handleMatchedRoute(
   }
   if (matchedRoute.endpoint === "sessions") {
     return handleSessions(request, env, client, incomingUrl, matchedRoute, requestLog);
+  }
+  if (matchedRoute.endpoint === "alpha/search" && config.web_search.mode !== "proxy") {
+    return handleConfiguredWebSearch(request, config, client, requestLog);
   }
   if (websocketRequest) {
     return handleResponsesWebSocket(

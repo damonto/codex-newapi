@@ -70,5 +70,8 @@
       "model": "gpt-4.1",
       "services": ["newapi-primary"]
     }
+  },
+  "web_search": {
+    "mode": "proxy"
   }
 }
