@@ -323,6 +323,37 @@ test("adapter rejects unsupported commands before calling a provider", async () 
   assert.equal(calls, 0);
 });
 
+test("adapter accepts and validates the Codex response length hint", async () => {
+  const { config, client } = fixture("tavily");
+  const originalFetch = globalThis.fetch;
+  const providerBodies = [];
+  globalThis.fetch = async (input, init) => {
+    const upstream = input instanceof Request ? input : new Request(input, init);
+    providerBodies.push(JSON.parse(await upstream.text()));
+    return Response.json({ results: [] });
+  };
+  try {
+    const accepted = await handleConfiguredWebSearch(
+      request({ search_query: [{ q: "docs" }], response_length: "short" }),
+      config,
+      client,
+    );
+    assert.equal(accepted.status, 200);
+
+    const rejected = await handleConfiguredWebSearch(
+      request({ search_query: [{ q: "docs" }], response_length: "verbose" }),
+      config,
+      client,
+    );
+    assert.equal(rejected.status, 400);
+    assert.equal((await rejected.json()).error.code, "invalid_search_request");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(providerBodies.length, 1);
+  assert.equal(Object.hasOwn(providerBodies[0], "response_length"), false);
+});
+
 test("adapter rejects unknown protocol fields instead of silently ignoring them", async () => {
   const { config, client } = fixture("tavily");
   const cases = [

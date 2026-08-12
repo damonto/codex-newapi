@@ -3,7 +3,7 @@ import { isRecord, nonBlankString } from "./search-providers/shared.ts";
 export const MAX_SEARCH_QUERIES = 4;
 export const MAX_RECENCY_DAYS = 3650;
 
-const SUPPORTED_COMMANDS = new Set(["search_query"]);
+const SUPPORTED_COMMANDS = new Set(["search_query", "response_length"]);
 const SUPPORTED_SETTINGS = new Set([
   "filters",
   "allowed_callers",
@@ -12,6 +12,9 @@ const SUPPORTED_SETTINGS = new Set([
 const SUPPORTED_FILTERS = new Set(["allowed_domains", "blocked_domains"]);
 const SUPPORTED_QUERY_FIELDS = new Set(["q", "recency", "domains"]);
 const ALLOWED_CALLERS = new Set(["direct", "shell", "code_interpreter"]);
+const RESPONSE_LENGTHS = new Set(["short", "medium", "long"]);
+
+export type SearchResponseLength = "short" | "medium" | "long";
 
 export interface SearchQuery {
   q: string;
@@ -28,6 +31,7 @@ export interface ParsedSearchRequest {
   model: string;
   queries: SearchQuery[];
   filters: SearchFilters;
+  responseLength?: SearchResponseLength;
 }
 
 export type SearchRequestErrorKind =
@@ -140,6 +144,19 @@ function parseQueries(commands: Record<string, unknown> | undefined): SearchQuer
   });
 }
 
+function parseResponseLength(
+  commands: Record<string, unknown> | undefined,
+): SearchResponseLength | undefined {
+  const value = commands?.response_length;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || !RESPONSE_LENGTHS.has(value)) {
+    fail("commands.response_length must be short, medium, or long");
+  }
+  return value as SearchResponseLength;
+}
+
 function parseFilters(settings: Record<string, unknown> | undefined): SearchFilters {
   if (!settings || settings.filters === undefined) {
     return {};
@@ -243,10 +260,16 @@ export function parseSearchRequest(text: string): ParsedSearchRequest {
     }
   }
   const queries = parseQueries(payload.commands);
+  const responseLength = parseResponseLength(payload.commands);
   validateSearchMetadata(payload.settings);
   const filters = parseFilters(payload.settings);
   for (const query of queries) {
     intersectDomains(query.domains, filters.allowedDomains);
   }
-  return { model: payload.model, queries, filters };
+  return {
+    model: payload.model,
+    queries,
+    filters,
+    ...(responseLength === undefined ? {} : { responseLength }),
+  };
 }

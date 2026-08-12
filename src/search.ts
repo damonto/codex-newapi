@@ -98,6 +98,9 @@ export async function handleConfiguredWebSearch(
     search: {
       mode: providerConfig.mode,
       queries: parsedRequest.queries.length,
+      ...(parsedRequest.responseLength === undefined
+        ? {}
+        : { response_length: parsedRequest.responseLength }),
     },
   });
   try {
