@@ -215,6 +215,50 @@ http_headers = { "x-openai-actor-authorization" = "codex-newapi" }
 
 To use the Image Gen tool, configure `http_headers = { "x-openai-actor-authorization" = "codex-newapi" }` for the provider.
 
+### Let Codex refresh the model catalog
+
+The basic provider configuration above is enough when `model` is set explicitly, but it does not
+make Codex fetch this gateway's model catalog. To make Codex request `GET /v1/models`, add
+command-backed authentication to the provider. The command output becomes the Bearer token used
+for the catalog request and other requests sent through this provider:
+
+```toml
+model = "gpt-5.6-sol"
+model_provider = "gateway"
+
+[model_providers.gateway]
+name = "Gateway"
+base_url = "https://codex-newapi.example.workers.dev/v1"
+wire_api = "responses"
+http_headers = { "x-openai-actor-authorization" = "codex-newapi" }
+
+[model_providers.gateway.auth]
+command = "printenv"
+args = ["OPENAI_API_KEY"]
+timeout_ms = 5000
+refresh_interval_ms = 300000
+```
+
+Set the environment variable before starting Codex so it is available to the Codex process:
+
+```bash
+export OPENAI_API_KEY="your-gateway-client-key"
+codex
+```
+
+`printenv` must print only the gateway client key to stdout. Another credential helper can be used
+instead as long as it has the same output behavior.
+
+The value must match an `api_keys[].api_key` entry in this gateway's private `config.json`. Do not
+put an upstream service key or an unrelated OpenAI/ChatGPT credential there, and never commit the
+key.
+
+Keep `requires_openai_auth` omitted (its default is `false`) and do not combine command-backed
+authentication with `env_key` or `experimental_bearer_token`. Command-backed authentication makes
+Codex refresh the remote model catalog, while the `x-openai-actor-authorization` header continues
+to enable the Codex Image Gen and standalone Search integrations. Codex caches the command result
+for `refresh_interval_ms` and runs the command again after that interval expires.
+
 ## Automatic deployment
 
 Import the repository with [Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) to deploy every push to `main`. Use `npm test && npm run typecheck` as the build command and `npm run deploy` as the deploy command.

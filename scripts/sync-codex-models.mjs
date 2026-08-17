@@ -3,7 +3,8 @@ import { relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const REPOSITORY = "openai/codex";
-const RELEASE_API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
+const SOURCE_REF = "main";
+export const CATALOG_URL = `https://raw.githubusercontent.com/${REPOSITORY}/${SOURCE_REF}/codex-rs/models-manager/models.json`;
 const TARGET_PATH = fileURLToPath(new URL("../src/codex-models.json", import.meta.url));
 
 function githubHeaders() {
@@ -26,21 +27,6 @@ async function fetchText(url, fetchImpl) {
     throw new Error(`request to ${url} failed with ${response.status}: ${text.slice(0, 300)}`);
   }
   return text;
-}
-
-export function releaseTagFrom(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("GitHub latest release response must be an object");
-  }
-  const tag = typeof value.tag_name === "string" ? value.tag_name.trim() : "";
-  if (!/^rust-v\d+\.\d+\.\d+(?:[-+].+)?$/.test(tag)) {
-    throw new Error(`latest Codex release has an unsupported tag: ${tag || "<missing>"}`);
-  }
-  return tag;
-}
-
-export function catalogUrlForTag(tag) {
-  return `https://raw.githubusercontent.com/${REPOSITORY}/${tag}/codex-rs/models-manager/models.json`;
 }
 
 export function validateCatalog(text) {
@@ -102,24 +88,13 @@ export async function syncCodexModels({
   onProgress = () => {},
   targetPath = TARGET_PATH,
 } = {}) {
-  onProgress(`Fetching latest release metadata from ${RELEASE_API_URL}`);
-  const releaseText = await fetchText(RELEASE_API_URL, fetchImpl);
-  let release;
-  try {
-    release = JSON.parse(releaseText);
-  } catch (error) {
-    throw new Error(`GitHub latest release response is not valid JSON: ${error.message}`);
-  }
-  const tag = releaseTagFrom(release);
-  onProgress(`Resolved latest Rust release tag: ${tag}`);
-  const sourceUrl = catalogUrlForTag(tag);
-  onProgress(`Downloading model catalog from ${sourceUrl}`);
-  const catalogText = await fetchText(sourceUrl, fetchImpl);
+  onProgress(`Downloading model catalog from ${CATALOG_URL}`);
+  const catalogText = await fetchText(CATALOG_URL, fetchImpl);
   const modelCount = validateCatalog(catalogText);
   onProgress(`Validated catalog structure (${modelCount} models)`);
   const changed = await replaceIfChanged(targetPath, catalogText);
   onProgress(changed ? "Writing updated catalog to disk" : "Catalog is unchanged; no file write needed");
-  return { changed, modelCount, sourceUrl, tag, targetPath };
+  return { changed, modelCount, sourceRef: SOURCE_REF, sourceUrl: CATALOG_URL, targetPath };
 }
 
 async function main() {
@@ -128,7 +103,9 @@ async function main() {
   });
   const target = relative(process.cwd(), result.targetPath) || result.targetPath;
   const action = result.changed ? "Synced" : "Already up to date:";
-  console.log(`[models:sync] ${action} ${result.modelCount} Codex models from ${result.tag} to ${target}`);
+  console.log(
+    `[models:sync] ${action} ${result.modelCount} Codex models from ${result.sourceRef} to ${target}`,
+  );
 }
 
 const entryPoint = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;

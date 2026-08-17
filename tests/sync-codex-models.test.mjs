@@ -1,25 +1,44 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
-  catalogUrlForTag,
-  releaseTagFrom,
+  CATALOG_URL,
+  syncCodexModels,
   validateCatalog,
 } from "../scripts/sync-codex-models.mjs";
 
-test("releaseTagFrom accepts a stable Codex Rust release", () => {
-  assert.equal(releaseTagFrom({ tag_name: "rust-v0.145.0" }), "rust-v0.145.0");
-});
-
-test("releaseTagFrom rejects unrelated repository releases", () => {
-  assert.throws(() => releaseTagFrom({ tag_name: "codex-zsh-v0.1.0" }), /unsupported tag/);
-});
-
-test("catalogUrlForTag builds the raw GitHub catalog URL", () => {
+test("catalog URL points to the Codex main branch", () => {
   assert.equal(
-    catalogUrlForTag("rust-v0.145.0"),
-    "https://raw.githubusercontent.com/openai/codex/rust-v0.145.0/codex-rs/models-manager/models.json",
+    CATALOG_URL,
+    "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
   );
+});
+
+test("syncCodexModels downloads the catalog directly from main", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-model-sync-"));
+  const targetPath = join(directory, "models.json");
+  const catalog = '{"models":[{"slug":"model-a"}]}';
+  const requestedUrls = [];
+
+  try {
+    const result = await syncCodexModels({
+      fetchImpl: async (url) => {
+        requestedUrls.push(url);
+        return new Response(catalog);
+      },
+      targetPath,
+    });
+
+    assert.deepEqual(requestedUrls, [CATALOG_URL]);
+    assert.equal(result.sourceRef, "main");
+    assert.equal(result.sourceUrl, CATALOG_URL);
+    assert.equal(await readFile(targetPath, "utf8"), catalog);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 });
 
 test("validateCatalog rejects duplicate or missing model slugs", () => {
