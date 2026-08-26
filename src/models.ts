@@ -1,10 +1,18 @@
-import codexCatalog from "./codex-models.json" with { type: "json" };
 import { discardBody, readBodyWithinLimit } from "./body.ts";
 import {
   mapWithConcurrency,
   SERVICE_FAN_OUT_CONCURRENCY,
 } from "./concurrency.ts";
 import { upstreamApiKeyValues } from "./credentials.ts";
+import {
+  isHealthFailureStatus,
+  isKeyHealthFailureStatus,
+  recordKeyFailure,
+  recordServiceFailure,
+  recordServiceSuccess,
+  scheduleHealthUpdate,
+  type HealthExecutionContext,
+} from "./health.ts";
 import {
   forwardRequestHeaders,
   jsonResponse,
@@ -13,26 +21,18 @@ import {
   upstreamUrl,
 } from "./http.ts";
 import {
-  isKeyHealthFailureStatus,
-  recordServiceFailure,
-  recordKeyFailure,
-  recordServiceSuccess,
-  isHealthFailureStatus,
-  scheduleHealthUpdate,
-  type HealthExecutionContext,
-} from "./health.ts";
+  elapsedMs,
+  errorMessage,
+  type LogFields,
+  type RequestLogContext,
+} from "./log.ts";
+import codexCatalog from "./models.json" with { type: "json" };
 import {
   allowedServiceCandidates,
   selectAvailableCatalogTargetsWithDetails,
   type RoutedService,
   type ServiceTarget,
 } from "./routing.ts";
-import {
-  elapsedMs,
-  errorMessage,
-  type LogFields,
-  type RequestLogContext,
-} from "./log.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,

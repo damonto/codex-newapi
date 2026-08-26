@@ -13,7 +13,7 @@
     "test": "npm run test:unit && npm run test:worker",
     "test:unit": "tsx --test tests/*.test.mjs",
     "test:worker": "vitest run",
-    "models:sync": "node scripts/sync-codex-models.mjs",
+    "models:sync": "node scripts/generate-models.mjs",
     "config:validate": "tsx scripts/validate-config.mjs",
     "config:put": "tsx scripts/upload-config.mjs"
   },
