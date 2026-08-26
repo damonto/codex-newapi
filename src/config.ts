@@ -421,12 +421,12 @@ export async function loadConfig(
   }
 
   try {
-    const raw = await env.CODEX_NEWAPI_CONFIG_KV.get(
+    const raw = await env.CODY_CONFIG_KV.get(
       env.CONFIG_KEY ?? DEFAULT_CONFIG_KEY,
     );
     if (!raw) {
       throw new ConfigError(
-        "configuration key is missing from CODEX_NEWAPI_CONFIG_KV",
+        "configuration key is missing from CODY_CONFIG_KV",
       );
     }
     const config = parseConfig(JSON.parse(raw) as unknown);

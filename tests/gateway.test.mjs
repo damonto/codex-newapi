@@ -74,7 +74,7 @@ function testEnv(config) {
     return index.delete(record.session_digest);
   };
   return {
-    CODEX_NEWAPI_CONFIG_KV: {
+    CODY_CONFIG_KV: {
       get: async () => JSON.stringify(config),
     },
     HEALTH: {
@@ -511,7 +511,7 @@ test("alpha search does not forward when no service declares web search support"
   assert.equal(calls, 0);
 });
 
-test("configured Tavily search returns a provider 404 without NewAPI fallback", async () => {
+test("configured Tavily search returns a provider 404 without upstream fallback", async () => {
   clearConfigCacheForTests();
   const config = gatewayConfig();
   config.web_search = {

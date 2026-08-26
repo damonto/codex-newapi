@@ -1,12 +1,12 @@
-# Codex NewAPI Gateway
+# Cody Gateway
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/damonto/codex-newapi)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/damonto/cody)
 
-Use several NewAPI services through one Cloudflare Workers endpoint. It works with Codex and other OpenAI-compatible clients.
+Use several upstream services through one Cloudflare Workers endpoint. It works with Codex and other OpenAI-compatible clients.
 
 ## What it does
 
-- Combines multiple NewAPI services behind one address.
+- Combines multiple upstream services behind one address.
 - Routes models by priority and controls access with client API keys.
 - Supports multiple upstream API keys per service with independent cooldowns.
 - Supports client-facing model routes with optional service constraints.
@@ -25,7 +25,7 @@ Install the project, sign in, and create a KV namespace:
 ```bash
 npm install
 npx wrangler login
-npx wrangler kv namespace create CODEX_NEWAPI_CONFIG_KV
+npx wrangler kv namespace create CODY_CONFIG_KV
 ```
 
 Put the returned namespace ID in `wrangler.jsonc`, replacing the placeholder KV ID.
@@ -53,7 +53,7 @@ npm run deploy
   "services": [
     {
       "id": "primary",
-      "base_url": "https://newapi.example.com/v1",
+      "base_url": "https://api.example.com/v1",
       "keys": [
         {
           "id": "primary-key",
@@ -107,7 +107,7 @@ npm run deploy
 - `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests in `proxy` mode. Defaults to `false` when omitted.
 - `api_keys`: keys used by your clients and the services each key may access. Each entry requires a globally unique, non-sensitive `id`.
 - `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services.
-- `web_search.mode`: selects standalone search behavior. `proxy` (the default) forwards `/v1/alpha/search` to a `supports_web_search` NewAPI service; `tavily` and `exa` call the configured provider directly and never fall back to proxy.
+- `web_search.mode`: selects standalone search behavior. `proxy` (the default) forwards `/v1/alpha/search` to a `supports_web_search` upstream service; `tavily` and `exa` call the configured provider directly and never fall back to proxy.
 - `web_search.base_url`: optional provider base URL. Defaults to `https://api.tavily.com` or `https://api.exa.ai` for adapter modes.
 - `web_search.api_key`: provider credential. Keep it in the KV configuration and out of source-controlled example files.
 - `web_search.max_results`: maximum results requested from the configured adapter. Tavily accepts 0 to 20 (default 5); Exa accepts 1 to 100 (default 10).
@@ -125,7 +125,7 @@ Services are considered by highest available priority, with equal-priority servi
 
 Choose exactly one global search mode. Omitting `web_search` preserves the existing `proxy` behavior.
 
-To forward `/v1/alpha/search` unchanged to NewAPI, enable search on the eligible services and select `proxy`:
+To forward `/v1/alpha/search` unchanged to an upstream, enable search on the eligible services and select `proxy`:
 
 ```json
 {
@@ -161,7 +161,7 @@ To adapt them to Exa:
 }
 ```
 
-Adapter modes call only the selected provider. They do not try NewAPI after a 404 or any other provider failure, and they do not switch between Tavily and Exa. `base_url` may be set for a compatible proxy; otherwise it defaults to `https://api.tavily.com` or `https://api.exa.ai`.
+Adapter modes call only the selected provider. They do not try an upstream service after a 404 or any other provider failure, and they do not switch between Tavily and Exa. `base_url` may be set for a compatible proxy; otherwise it defaults to `https://api.tavily.com` or `https://api.exa.ai`.
 
 Tavily and Exa modes support `commands.search_query` with up to four queries, including per-query `domains` and `recency` from 0 to 3650 days, plus global allowed/blocked domain filters. The Codex `response_length` hint is accepted and validated as `short`, `medium`, or `long`; provider result count and cost remain controlled by `web_search.max_results`. Tavily accepts up to 300 included and 150 excluded domains; Exa accepts up to 1200 of each. Codex commands that require a full browsing backend, including `image_query`, `open`, `click`, `find`, and `screenshot`, return `unsupported_search_command`. Unknown command, query, setting, and filter fields are rejected instead of being silently ignored. Codex `allowed_callers` and `external_web_access` metadata are validated but do not change the provider selected by the gateway configuration. The requested model must still be available to the authenticated client API key, but adapter requests do not participate in service health, retries, or session affinity.
 
@@ -208,12 +208,12 @@ model_provider = "gateway"
 
 [model_providers.gateway]
 name = "Gateway"
-base_url = "https://codex-newapi.example.workers.dev/v1"
+base_url = "https://cody.example.workers.dev/v1"
 wire_api = "responses"
-http_headers = { "x-openai-actor-authorization" = "codex-newapi" }
+http_headers = { "x-openai-actor-authorization" = "cody" }
 ```
 
-To use the Image Gen tool, configure `http_headers = { "x-openai-actor-authorization" = "codex-newapi" }` for the provider.
+To use the Image Gen tool, configure `http_headers = { "x-openai-actor-authorization" = "cody" }` for the provider.
 
 ### Let Codex refresh the model catalog
 
@@ -228,9 +228,9 @@ model_provider = "gateway"
 
 [model_providers.gateway]
 name = "Gateway"
-base_url = "https://codex-newapi.example.workers.dev/v1"
+base_url = "https://cody.example.workers.dev/v1"
 wire_api = "responses"
-http_headers = { "x-openai-actor-authorization" = "codex-newapi" }
+http_headers = { "x-openai-actor-authorization" = "cody" }
 
 [model_providers.gateway.auth]
 command = "printenv"

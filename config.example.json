@@ -2,7 +2,7 @@
   "$schema": "./config.schema.json",
   "services": [
     {
-      "id": "newapi-primary",
+      "id": "primary",
       "base_url": "https://primary.example.com/v1",
       "keys": [
         {
@@ -29,7 +29,7 @@
       }
     },
     {
-      "id": "newapi-secondary",
+      "id": "secondary",
       "base_url": "https://secondary.example.com/v1",
       "keys": [
         {
@@ -54,12 +54,12 @@
     {
       "id": "client-a",
       "api_key": "sk-gateway-client-a",
-      "services": ["newapi-primary", "newapi-secondary"]
+      "services": ["primary", "secondary"]
     },
     {
       "id": "client-b",
       "api_key": "sk-gateway-client-b",
-      "services": ["newapi-secondary"]
+      "services": ["secondary"]
     }
   ],
   "model_routes": {
@@ -68,7 +68,7 @@
     },
     "codex-auto-review": {
       "model": "gpt-4.1",
-      "services": ["newapi-primary"]
+      "services": ["primary"]
     }
   },
   "web_search": {

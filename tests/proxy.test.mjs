@@ -340,7 +340,7 @@ test("forwarding removes proxy metadata and client credentials", () => {
       "x-real-ip": "198.51.100.99",
       "cf-connecting-ip": "203.0.113.7",
       "x-api-key": "client",
-      "x-openai-actor-authorization": "codex-newapi",
+      "x-openai-actor-authorization": "cody",
       "x-oai-attestation": "device-attestation",
       "chatgpt-account-id": "account-id",
       "content-length": "10",
@@ -367,7 +367,7 @@ test("forwarding removes proxy metadata and client credentials", () => {
 test("WebSocket forwarding strips Codex credentials and attestation", () => {
   const request = new Request("https://gateway.example/v1/responses", {
     headers: {
-      "x-openai-actor-authorization": "codex-newapi",
+      "x-openai-actor-authorization": "cody",
       "x-oai-attestation": "device-attestation",
       "chatgpt-account-id": "account-id",
       "x-tenant": "tenant-a",

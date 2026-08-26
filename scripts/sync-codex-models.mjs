@@ -10,7 +10,7 @@ const TARGET_PATH = fileURLToPath(new URL("../src/codex-models.json", import.met
 function githubHeaders() {
   const headers = {
     accept: "application/vnd.github+json",
-    "user-agent": "codex-newapi-model-sync",
+    "user-agent": "cody-model-sync",
     "x-github-api-version": "2022-11-28",
   };
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;

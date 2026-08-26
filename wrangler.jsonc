@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "codex-newapi",
+	"name": "cody",
 	"main": "src/worker.ts",
 	"compatibility_date": "2026-07-24",
 	"compatibility_flags": ["nodejs_compat"],
@@ -17,8 +17,8 @@
 	},
 	"kv_namespaces": [
 		{
-			"binding": "CODEX_NEWAPI_CONFIG_KV",
-			// Replace this placeholder with the ID from `wrangler kv namespace create CODEX_NEWAPI_CONFIG_KV`.
+			"binding": "CODY_CONFIG_KV",
+			// Replace this placeholder with the ID from `wrangler kv namespace create CODY_CONFIG_KV`.
 			"id": "8c9a59105a1e4c4f918e33a93323c533"
 		}
 	],

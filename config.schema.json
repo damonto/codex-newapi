@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/codex-newapi-gateway.schema.json",
-  "title": "Codex NewAPI Gateway Configuration",
+  "$id": "https://example.invalid/cody.schema.json",
+  "title": "Cody Gateway Configuration",
   "type": "object",
   "additionalProperties": false,
   "required": [

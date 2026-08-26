@@ -262,7 +262,7 @@ function nextClose(socket: WebSocket): Promise<CloseEvent> {
 
 async function putConfig(config: ReturnType<typeof gatewayConfig>): Promise<void> {
   clearConfigCacheForTests();
-  await env.CODEX_NEWAPI_CONFIG_KV.put("gateway-config", JSON.stringify(config));
+  await env.CODY_CONFIG_KV.put("gateway-config", JSON.stringify(config));
 }
 
 async function clearRoutingState(): Promise<void> {
@@ -344,7 +344,7 @@ test("responses WebSocket rewrites the first model and proxies headers, text, bi
       "cf-connecting-ip": "203.0.113.8",
       "sec-websocket-key": "client-generated",
       "session-id": "websocket-session",
-      "x-openai-actor-authorization": "codex-newapi",
+      "x-openai-actor-authorization": "cody",
       "x-oai-attestation": "device-attestation",
       "chatgpt-account-id": "account-id",
       "x-tenant": "tenant-a",

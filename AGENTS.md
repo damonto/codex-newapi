@@ -2,7 +2,7 @@
 
 ## Project overview
 
-This repository contains a TypeScript Cloudflare Worker that aggregates multiple OpenAI-compatible NewAPI services for Codex and other clients.
+This repository contains a TypeScript Cloudflare Worker that serves as an AI API gateway for Codex and other clients.
 
 ## Runtime and tooling
 
@@ -39,7 +39,7 @@ This repository contains a TypeScript Cloudflare Worker that aggregates multiple
 
 - `wrangler.jsonc` contains a placeholder KV namespace ID. Replace it with an ID from the target Cloudflare account before deployment.
 - Use Cloudflare Workers Builds Git integration for automatic deployments from `main`; do not add a GitHub Actions deployment workflow unless the user explicitly requests one.
-- Upload the validated JSON configuration to the `CODEX_NEWAPI_CONFIG_KV` binding after creating the namespace.
+- Upload the validated JSON configuration to the `CODY_CONFIG_KV` binding after creating the namespace.
 - Keep Durable Object migrations compatible with the deployed Worker; do not rename the `ServiceHealth` class without a migration plan.
 - Model catalog fetches use a three-second timeout and cache successful aggregates for a short, configurable isolate-local TTL.
 - Strip proxy metadata, client credentials, and hop-by-hop headers before forwarding; preserve ordinary application headers.

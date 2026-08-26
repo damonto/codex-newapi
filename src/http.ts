@@ -38,7 +38,7 @@ export function shouldStripRequestHeader(name: string): boolean {
   const lowerName = name.toLowerCase();
   return HOP_BY_HOP_HEADERS.has(lowerName) ||
     SENSITIVE_REQUEST_HEADERS.has(lowerName) ||
-    lowerName.startsWith("x-codex-newapi-") ||
+    lowerName.startsWith("x-cody-") ||
     lowerName.startsWith("x-forwarded-") ||
     lowerName.startsWith("x-real-") ||
     lowerName.startsWith("x-envoy-") ||
