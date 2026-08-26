@@ -7,3 +7,4 @@ config.local.json
 *.log
 .DS_Store
 .codex
+refs/
