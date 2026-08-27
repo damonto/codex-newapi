@@ -1211,6 +1211,51 @@ test("model endpoint switches between standard and Codex response formats", asyn
   }
 });
 
+test("model endpoint returns complete Anthropic ModelInfo entries to Claude clients", async () => {
+  clearConfigCacheForTests();
+  clearModelsCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      object: "list",
+      data: [
+        { id: "grok-4.5", object: "model", owned_by: "newapi" },
+        { id: "review-model", object: "model", owned_by: "newapi" },
+      ],
+    });
+  const env = testEnv(gatewayConfig());
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          authorization: "Bearer client-key",
+          "user-agent": "claude-cli/1.0.0",
+        },
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(
+      body.data.map((model) => model.id),
+      ["grok-4.5", "gpt-5.6-sol", "review-model"],
+    );
+    for (const entry of body.data) {
+      assert.equal(entry.type, "model");
+      assert.equal(typeof entry.display_name, "string");
+      assert.equal(typeof entry.created_at, "string");
+      assert.equal(typeof entry.max_input_tokens, "number");
+      assert.equal(typeof entry.max_tokens, "number");
+      assert.equal(typeof entry.capabilities, "object");
+    }
+    assert.equal(body.data[0].display_name, "grok-4.5");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("model catalog fan-out is summarized in one request log", async () => {
   clearConfigCacheForTests();
   clearModelsCacheForTests();

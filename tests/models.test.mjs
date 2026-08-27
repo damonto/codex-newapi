@@ -110,6 +110,116 @@ test("Anthropic clients receive the Anthropic model-list shape", async () => {
   }
 });
 
+test("Anthropic model entries carry the ModelInfo fields Claude requires", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  config.services[0].models = ["grok-4.6", "gpt-5.6-sol"];
+  const client = config.api_keys[0];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      data: [
+        { id: "grok-4.6", object: "model" },
+        { id: "gpt-5.6-sol", object: "model" },
+      ],
+    });
+  const { env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          "x-api-key": "client",
+          "anthropic-version": "2023-06-01",
+          "user-agent": "claude-cli/1.0.0",
+        },
+      }),
+      env,
+      config,
+      client,
+      "test",
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(
+      body.data.map((entry) => entry.id),
+      ["grok-4.6", "gpt-5.6-sol"],
+    );
+    const grok = body.data.find((entry) => entry.id === "grok-4.6");
+    assert.equal(grok.type, "model");
+    assert.equal(grok.display_name, "Grok 4.6");
+    assert.equal(typeof grok.created_at, "string");
+    assert.equal(grok.max_input_tokens, 1048576);
+    assert.equal(typeof grok.max_tokens, "number");
+    assert.equal(grok.capabilities.image_input.supported, true);
+    assert.equal(grok.capabilities.pdf_input.supported, false);
+    assert.equal(grok.capabilities.code_execution.supported, false);
+    assert.equal(grok.capabilities.effort.supported, true);
+    assert.deepEqual(grok.capabilities.effort, {
+      supported: true,
+      low: { supported: true },
+      medium: { supported: true },
+      high: { supported: true },
+      max: { supported: false },
+      xhigh: { supported: true },
+    });
+    assert.equal(grok.capabilities.thinking.supported, true);
+    assert.deepEqual(grok.capabilities.thinking.types, {
+      adaptive: { supported: true },
+      enabled: { supported: true },
+    });
+
+    const gpt = body.data.find((entry) => entry.id === "gpt-5.6-sol");
+    assert.equal(gpt.display_name, "GPT-5.6-Sol");
+    assert.equal(gpt.max_input_tokens, 872000);
+    assert.equal(gpt.capabilities.image_input.supported, true);
+    assert.equal(gpt.capabilities.code_execution.supported, true);
+    assert.equal(gpt.capabilities.effort.max.supported, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Anthropic model entries fall back conservatively outside the catalog", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  const client = config.api_keys[0];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ data: [{ id: "model", object: "model" }] });
+  const { env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          "x-api-key": "client",
+          "anthropic-version": "2023-06-01",
+          "user-agent": "claude-cli/1.0.0",
+        },
+      }),
+      env,
+      config,
+      client,
+      "test",
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const entry = body.data[0];
+    assert.equal(entry.display_name, "model");
+    assert.equal(entry.max_input_tokens, 200000);
+    assert.equal(entry.max_tokens, 32000);
+    assert.equal(entry.capabilities.image_input.supported, false);
+    assert.equal(entry.capabilities.pdf_input.supported, false);
+    assert.equal(entry.capabilities.code_execution.supported, false);
+    assert.equal(entry.capabilities.effort.supported, false);
+    assert.equal(entry.capabilities.thinking.supported, false);
+    assert.equal(entry.capabilities.context_management.supported, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("model format selection prefers the Anthropic protocol over user agents", () => {
   const anthropic = new Request("https://gateway.example/v1/models", {
     headers: { "anthropic-version": "2023-06-01", "user-agent": "codex/1.0" },
@@ -123,6 +233,21 @@ test("model format selection prefers the Anthropic protocol over user agents", (
     headers: { "user-agent": "OpenAI-SDK" },
   });
   assert.equal(modelsFormatFor(openai), "openai");
+});
+
+test("model format selection detects Claude user agents without protocol headers", () => {
+  const claudeCli = new Request("https://gateway.example/v1/models", {
+    headers: { "user-agent": "claude-cli/1.0.0" },
+  });
+  assert.equal(modelsFormatFor(claudeCli), "anthropic");
+  const claudeDesktop = new Request("https://gateway.example/v1/models", {
+    headers: { "user-agent": "claude-desktop" },
+  });
+  assert.equal(modelsFormatFor(claudeDesktop), "anthropic");
+  const claudeCode = new Request("https://gateway.example/v1/models", {
+    headers: { "user-agent": "claude-code/2.0" },
+  });
+  assert.equal(modelsFormatFor(claudeCode), "anthropic");
 });
 
 test("model cache key hashing failures propagate", async (t) => {

@@ -14,13 +14,12 @@ import {
   type HealthExecutionContext,
 } from "./health.ts";
 import {
+  apiError,
   forwardRequestHeaders,
   jsonResponse,
-  apiError,
   shouldStripRequestHeader,
   upstreamUrl,
 } from "./http.ts";
-import { requestProtocol } from "./protocol.ts";
 import {
   elapsedMs,
   errorMessage,
@@ -28,6 +27,7 @@ import {
   type RequestLogContext,
 } from "./log.ts";
 import codexCatalog from "./models.json" with { type: "json" };
+import { requestProtocol } from "./protocol.ts";
 import {
   allowedServiceCandidates,
   modelRoutesForClient,
@@ -93,6 +93,22 @@ class ModelsRequestError extends Error {
 }
 
 const modelsCache = new Map<string, ModelsCacheEntry>();
+
+// The Codex catalog does not publish release dates or per-model max output
+// limits. Claude Code treats 32k as the default max_tokens for unknown
+// models (refs/claude-code/src/utils/context.ts) and 200k as the fallback
+// context window, so mirror those values for models outside the catalog.
+const ANTHROPIC_MODEL_CREATED_AT = "2024-01-01T00:00:00Z";
+const ANTHROPIC_MODEL_MAX_TOKENS = 32000;
+const ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS = 200000;
+
+const codexCatalogModels = (codexCatalog as { models: JsonObject[] }).models;
+const codexModelBySlug = new Map<string, JsonObject>();
+for (const model of codexCatalogModels) {
+  if (typeof model.slug === "string") {
+    codexModelBySlug.set(model.slug, model);
+  }
+}
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -370,8 +386,7 @@ function codexModelIds(
 export function aggregateCodexModels(
   clientModelIds: Set<string>,
 ): JsonObject[] {
-  const catalog = codexCatalog as { models: JsonObject[] };
-  return catalog.models.filter(
+  return codexCatalogModels.filter(
     (model) => typeof model.slug === "string" && clientModelIds.has(model.slug),
   );
 }
@@ -382,11 +397,101 @@ export function isCodexUserAgent(request: Request): boolean {
   );
 }
 
+export function isClaudeUserAgent(request: Request): boolean {
+  const userAgent = request.headers.get("user-agent")?.toLowerCase() ?? "";
+  return (
+    userAgent.includes("claude-cli") ||
+    userAgent.includes("claude-desktop") ||
+    userAgent.includes("claude-code") ||
+    userAgent.includes("claude-agent-sdk") ||
+    userAgent.includes("anthropic-sdk")
+  );
+}
+
 export function modelsFormatFor(request: Request): ModelsFormat {
   if (requestProtocol(request) === "anthropic") {
     return "anthropic";
   }
-  return isCodexUserAgent(request) ? "codex" : "openai";
+  if (isCodexUserAgent(request)) {
+    return "codex";
+  }
+  return isClaudeUserAgent(request) ? "anthropic" : "openai";
+}
+
+function anthropicModelInfo(model: JsonObject): JsonObject {
+  const id = typeof model.id === "string" ? model.id : "";
+  const catalog = codexModelBySlug.get(id);
+  const inputModalities = Array.isArray(catalog?.input_modalities)
+    ? (catalog.input_modalities as unknown[])
+    : [];
+  const supportsImages = inputModalities.includes("image");
+  const supportsPdf = inputModalities.includes("pdf");
+  const supportsReasoningSummaries =
+    catalog?.supports_reasoning_summaries === true ||
+    catalog?.supports_reasoning_summary_parameter === true;
+  const supportsCodeExecution =
+    catalog !== undefined &&
+    typeof catalog.node_repl_disabled === "boolean" &&
+    !catalog.node_repl_disabled;
+  const supportedEffortLevels = Array.isArray(
+    catalog?.supported_reasoning_levels,
+  )
+    ? (catalog.supported_reasoning_levels as unknown[])
+      .filter(
+        (entry): entry is { effort?: unknown } =>
+          typeof entry === "object" && entry !== null,
+      )
+      .map((entry) => entry.effort)
+      .filter((effort): effort is string => typeof effort === "string")
+    : [];
+  const supportsEffort = supportedEffortLevels.length > 0;
+  const maxInputTokens =
+    typeof catalog?.max_context_window === "number"
+      ? catalog.max_context_window
+      : typeof catalog?.context_window === "number"
+        ? catalog.context_window
+        : ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS;
+  const displayName =
+    typeof catalog?.display_name === "string" ? catalog.display_name : id;
+  const effortCapability = {
+    supported: supportsEffort,
+    low: { supported: supportedEffortLevels.includes("low") },
+    medium: { supported: supportedEffortLevels.includes("medium") },
+    high: { supported: supportedEffortLevels.includes("high") },
+    max: { supported: supportedEffortLevels.includes("max") },
+    xhigh: { supported: supportedEffortLevels.includes("xhigh") },
+  };
+
+  return {
+    id,
+    type: "model",
+    display_name: displayName,
+    created_at: ANTHROPIC_MODEL_CREATED_AT,
+    max_input_tokens: maxInputTokens,
+    max_tokens: ANTHROPIC_MODEL_MAX_TOKENS,
+    capabilities: {
+      batch: { supported: true },
+      citations: { supported: true },
+      code_execution: { supported: supportsCodeExecution },
+      context_management: {
+        supported: supportsReasoningSummaries,
+        clear_thinking_20251015: { supported: supportsReasoningSummaries },
+        clear_tool_uses_20250919: { supported: supportsReasoningSummaries },
+        compact_20260112: { supported: supportsReasoningSummaries },
+      },
+      effort: effortCapability,
+      image_input: { supported: supportsImages },
+      pdf_input: { supported: supportsPdf },
+      structured_outputs: { supported: true },
+      thinking: {
+        supported: supportsEffort,
+        types: {
+          adaptive: { supported: supportsEffort },
+          enabled: { supported: supportsEffort },
+        },
+      },
+    },
+  };
 }
 
 function cacheTtlMs(env: Env): number {
@@ -588,12 +693,15 @@ function modelsPayload(
         ),
       };
     case "anthropic":
-      return {
-        data: standardModels,
-        has_more: false,
-        first_id: standardModels[0]?.id ?? null,
-        last_id: standardModels.at(-1)?.id ?? null,
-      };
+      {
+        const data = standardModels.map(anthropicModelInfo);
+        return {
+          data,
+          has_more: false,
+          first_id: data[0]?.id ?? null,
+          last_id: data.at(-1)?.id ?? null,
+        };
+      }
     case "openai":
       return { object: "list", data: standardModels };
   }

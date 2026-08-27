@@ -37,7 +37,9 @@
       "effective_context_window_percent": 95,
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],
-      "input_modalities": ["text"]
+      "input_modalities": [
+        "text"
+      ]
     },
     {
       "slug": "glm-5.3-flash",
@@ -76,7 +78,9 @@
       "effective_context_window_percent": 95,
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],
-      "input_modalities": ["text"]
+      "input_modalities": [
+        "text"
+      ]
     }
   ]
 }
