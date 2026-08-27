@@ -14,7 +14,12 @@ export function randomEntry<T>(
     return undefined;
   }
   const value = random();
-  const normalized = Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0;
-  const index = Math.min(entries.length - 1, Math.floor(normalized * entries.length));
+  const normalized = Number.isFinite(value)
+    ? Math.min(Math.max(value, 0), 1)
+    : 0;
+  const index = Math.min(
+    entries.length - 1,
+    Math.floor(normalized * entries.length),
+  );
   return entries[index];
 }

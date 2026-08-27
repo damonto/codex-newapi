@@ -8,6 +8,8 @@ import {
   FAILURE_WINDOW_MS,
   clearKeyHealth,
   clearServiceHealth,
+  isAnthropicHealthFailureStatus,
+  isAnthropicKeyHealthFailureStatus,
   isHealthFailureStatus,
   isKeyHealthFailureStatus,
   keyIsAvailable,
@@ -88,6 +90,13 @@ test("HTTP 402 and 403 are immediate key failure statuses", () => {
   assert.equal(isKeyHealthFailureStatus(429), false);
 });
 
+test("Anthropic overload and authentication statuses map to health failures", () => {
+  assert.equal(isAnthropicHealthFailureStatus(529), true);
+  assert.equal(isAnthropicHealthFailureStatus(503), false);
+  assert.equal(isAnthropicKeyHealthFailureStatus(401), true);
+  assert.equal(isAnthropicKeyHealthFailureStatus(403), false);
+});
+
 test("a first key failure starts a 30-minute cooldown that expires normally", () => {
   let now = 10_000;
   const health = new ServiceHealthState(() => now);
@@ -159,10 +168,7 @@ test("health listing preserves service and key configuration order", async () =>
   const services = [
     {
       id: "first",
-      keys: [
-        { id: "first-a" },
-        { id: "first-b" },
-      ],
+      keys: [{ id: "first-a" }, { id: "first-b" }],
     },
     {
       id: "second",
@@ -248,9 +254,12 @@ test("health updates use waitUntil when it is available", async () => {
     },
   };
   let completed = false;
-  await scheduleHealthUpdate(context, Promise.resolve().then(() => {
-    completed = true;
-  }));
+  await scheduleHealthUpdate(
+    context,
+    Promise.resolve().then(() => {
+      completed = true;
+    }),
+  );
   assert(scheduled instanceof Promise);
   assert.equal(completed, true);
 });

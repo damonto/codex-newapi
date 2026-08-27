@@ -46,7 +46,12 @@ const SERVICE_API_KEY_FIELDS = new Set([
 const API_KEY_FIELDS = new Set(["id", "api_key", "services", "model_routes"]);
 const MODEL_ROUTE_FIELDS = new Set(["model", "services"]);
 const RETRY_FIELDS = new Set(["status_codes", "delays_ms"]);
-const WEB_SEARCH_FIELDS = new Set(["mode", "base_url", "api_key", "max_results"]);
+const WEB_SEARCH_FIELDS = new Set([
+  "mode",
+  "base_url",
+  "api_key",
+  "max_results",
+]);
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -103,7 +108,9 @@ function stringArray(value: unknown, path: string): string[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new ConfigError(`${path} must be a non-empty array`);
   }
-  const result = value.map((entry, index) => requiredString(entry, `${path}[${index}]`));
+  const result = value.map((entry, index) =>
+    requiredString(entry, `${path}[${index}]`),
+  );
   if (new Set(result).size !== result.length) {
     throw new ConfigError(`${path} must not contain duplicates`);
   }
@@ -124,7 +131,9 @@ function integerArray(
     throw new ConfigError(`${path} must be an array`);
   }
   if (value.length > options.maxItems) {
-    throw new ConfigError(`${path} must contain at most ${options.maxItems} items`);
+    throw new ConfigError(
+      `${path} must contain at most ${options.maxItems} items`,
+    );
   }
   const result = value.map((entry, index) => {
     const itemPath = `${path}[${index}]`;
@@ -142,7 +151,10 @@ function integerArray(
   return result;
 }
 
-function parseRetry(value: unknown, path: string): ServiceRetryConfig | undefined {
+function parseRetry(
+  value: unknown,
+  path: string,
+): ServiceRetryConfig | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -187,20 +199,30 @@ function parseWebSearch(value: unknown): WebSearchConfig {
   if (mode === "proxy") {
     for (const field of ["base_url", "api_key", "max_results"]) {
       if (value[field] !== undefined) {
-        throw new ConfigError(`${path}.${field} is only supported for Tavily or Exa mode`);
+        throw new ConfigError(
+          `${path}.${field} is only supported for Tavily or Exa mode`,
+        );
       }
     }
     return { mode };
   }
   const provider = webSearchProviderFor(mode);
-  const baseUrl = value.base_url === undefined
-    ? provider.defaultBaseUrl
-    : validateBaseUrl(requiredString(value.base_url, `${path}.base_url`), `${path}.base_url`);
+  const baseUrl =
+    value.base_url === undefined
+      ? provider.defaultBaseUrl
+      : validateBaseUrl(
+          requiredString(value.base_url, `${path}.base_url`),
+          `${path}.base_url`,
+        );
   const apiKey = requiredString(value.api_key, `${path}.api_key`);
-  const maxResults = value.max_results === undefined
-    ? provider.maxResults.default
-    : requiredInteger(value.max_results, `${path}.max_results`);
-  if (maxResults < provider.maxResults.min || maxResults > provider.maxResults.max) {
+  const maxResults =
+    value.max_results === undefined
+      ? provider.maxResults.default
+      : requiredInteger(value.max_results, `${path}.max_results`);
+  if (
+    maxResults < provider.maxResults.min ||
+    maxResults > provider.maxResults.max
+  ) {
     throw new ConfigError(
       `${path}.max_results must be between ${provider.maxResults.min} and ${provider.maxResults.max} for ${mode}`,
     );
@@ -219,7 +241,9 @@ function validateBaseUrl(value: string, path: string): string {
     throw new ConfigError(`${path} must use http or https`);
   }
   if (url.username || url.password || url.search || url.hash) {
-    throw new ConfigError(`${path} must not contain credentials, query parameters, or a fragment`);
+    throw new ConfigError(
+      `${path} must not contain credentials, query parameters, or a fragment`,
+    );
   }
   return value.replace(/\/+$/, "");
 }
@@ -261,7 +285,7 @@ function parseService(value: unknown, index: number): ServiceConfig {
     throw new ConfigError(`${path}.keys must be a non-empty array`);
   }
   const keys = value.keys.map((entry, keyIndex) =>
-    parseServiceApiKey(entry, index, keyIndex)
+    parseServiceApiKey(entry, index, keyIndex),
   );
   if (new Set(keys.map((entry) => entry.id)).size !== keys.length) {
     throw new ConfigError(`${path}.keys.id values must be unique`);
@@ -269,7 +293,10 @@ function parseService(value: unknown, index: number): ServiceConfig {
   const retry = parseRetry(value.retry, `${path}.retry`);
   return {
     id,
-    base_url: validateBaseUrl(requiredString(value.base_url, `${path}.base_url`), `${path}.base_url`),
+    base_url: validateBaseUrl(
+      requiredString(value.base_url, `${path}.base_url`),
+      `${path}.base_url`,
+    ),
     keys,
     disabled: requiredBoolean(value.disabled, `${path}.disabled`),
     priority: requiredInteger(value.priority, `${path}.priority`),
@@ -292,12 +319,17 @@ function parseApiKey(value: unknown, index: number): ClientApiKeyConfig {
     throw new ConfigError(`${path} must be an object`);
   }
   rejectUnknownFields(value, API_KEY_FIELDS, path);
-  const modelRoutes = parseModelRoutes(value.model_routes, `${path}.model_routes`);
+  const modelRoutes = parseModelRoutes(
+    value.model_routes,
+    `${path}.model_routes`,
+  );
   return {
     id: validateId(value.id, `${path}.id`),
     api_key: requiredString(value.api_key, `${path}.api_key`),
     services: stringArray(value.services, `${path}.services`),
-    ...(Object.keys(modelRoutes).length > 0 ? { model_routes: modelRoutes } : {}),
+    ...(Object.keys(modelRoutes).length > 0
+      ? { model_routes: modelRoutes }
+      : {}),
   };
 }
 
@@ -317,16 +349,19 @@ function parseModelRoutes(
     const clientModel = requiredString(rawClientModel, `${basePath} key`);
     const path = `${basePath}.${clientModel}`;
     if (clientModels.has(clientModel)) {
-      throw new ConfigError(`${basePath} contains duplicate normalized model ${clientModel}`);
+      throw new ConfigError(
+        `${basePath} contains duplicate normalized model ${clientModel}`,
+      );
     }
     clientModels.add(clientModel);
     if (!isRecord(rawRoute)) {
       throw new ConfigError(`${path} must be an object`);
     }
     rejectUnknownFields(rawRoute, MODEL_ROUTE_FIELDS, path);
-    const services = rawRoute.services === undefined
-      ? undefined
-      : stringArray(rawRoute.services, `${path}.services`);
+    const services =
+      rawRoute.services === undefined
+        ? undefined
+        : stringArray(rawRoute.services, `${path}.services`);
     routes.push([
       clientModel,
       {
@@ -369,19 +404,22 @@ export function parseConfig(value: unknown): GatewayConfig {
   for (const [index, entry] of apiKeys.entries()) {
     for (const serviceId of entry.services) {
       if (!serviceIds.has(serviceId)) {
-        throw new ConfigError(`api_keys[${index}].services references unknown service ${serviceId}`);
+        throw new ConfigError(
+          `api_keys[${index}].services references unknown service ${serviceId}`,
+        );
       }
     }
   }
 
   const modelRoutes = parseModelRoutes(value.model_routes, "model_routes");
   const webSearch = parseWebSearch(value.web_search);
-  const knownUpstreamModels = new Set(services.flatMap((service) => service.models));
-  const servicesById = new Map(services.map((service) => [service.id, service]));
-  const validateRoute = (
-    route: ModelRouteConfig,
-    path: string,
-  ): void => {
+  const knownUpstreamModels = new Set(
+    services.flatMap((service) => service.models),
+  );
+  const servicesById = new Map(
+    services.map((service) => [service.id, service]),
+  );
+  const validateRoute = (route: ModelRouteConfig, path: string): void => {
     if (!knownUpstreamModels.has(route.model)) {
       throw new ConfigError(
         `${path}.model targets ${route.model}, which no service supports`,
@@ -405,7 +443,9 @@ export function parseConfig(value: unknown): GatewayConfig {
     validateRoute(route, `model_routes.${clientModel}`);
   }
   for (const [index, entry] of apiKeys.entries()) {
-    for (const [clientModel, route] of Object.entries(entry.model_routes ?? {})) {
+    for (const [clientModel, route] of Object.entries(
+      entry.model_routes ?? {},
+    )) {
       validateRoute(route, `api_keys[${index}].model_routes.${clientModel}`);
     }
   }
@@ -419,7 +459,9 @@ export function parseConfig(value: unknown): GatewayConfig {
 }
 
 function cacheTtlMs(env: Env): number {
-  const configured = Number(env.CONFIG_CACHE_TTL_SECONDS ?? DEFAULT_CACHE_TTL_SECONDS);
+  const configured = Number(
+    env.CONFIG_CACHE_TTL_SECONDS ?? DEFAULT_CACHE_TTL_SECONDS,
+  );
   if (!Number.isFinite(configured) || configured < 0) {
     return DEFAULT_CACHE_TTL_SECONDS * 1000;
   }
@@ -441,9 +483,7 @@ export async function loadConfig(
       env.CONFIG_KEY ?? DEFAULT_CONFIG_KEY,
     );
     if (!raw) {
-      throw new ConfigError(
-        "configuration key is missing from CODY_CONFIG_KV",
-      );
+      throw new ConfigError("configuration key is missing from CODY_CONFIG_KV");
     }
     const config = parseConfig(JSON.parse(raw) as unknown);
     const ttlMs = cacheTtlMs(env);
@@ -467,7 +507,9 @@ export async function loadConfig(
     if (error instanceof ConfigError) {
       throw error;
     }
-    throw new ConfigError(`configuration could not be loaded: ${String(error)}`);
+    throw new ConfigError(
+      `configuration could not be loaded: ${String(error)}`,
+    );
   }
 }
 

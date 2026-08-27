@@ -18,10 +18,7 @@ import {
   ProviderProtocolError,
   webSearchProviderFor,
 } from "./search-providers/index.ts";
-import type {
-  ClientApiKeyConfig,
-  GatewayConfig,
-} from "./types.ts";
+import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
 
 export const MAX_SEARCH_BODY_BYTES = 1024 * 1024;
 
@@ -65,7 +62,8 @@ export async function handleConfiguredWebSearch(
   try {
     parsedRequest = parseSearchRequest(new TextDecoder().decode(rawBody));
   } catch (error) {
-    const requestError = error instanceof SearchRequestError ? error : undefined;
+    const requestError =
+      error instanceof SearchRequestError ? error : undefined;
     requestLog?.warn({
       outcome: requestError?.kind ?? "invalid_search_request",
       error: errorMessage(error),

@@ -4,7 +4,9 @@ import { expect, test } from "vitest";
 const digest = (value: string): string => value.repeat(64);
 
 test("session affinity indexes paginate and remove only matching bindings", async () => {
-  const stub = env.SESSION_AFFINITY_INDEX.getByName(`index-${crypto.randomUUID()}`);
+  const stub = env.SESSION_AFFINITY_INDEX.getByName(
+    `index-${crypto.randomUUID()}`,
+  );
   const entries = [
     {
       session_digest: digest("a"),
@@ -49,7 +51,9 @@ test("session affinity indexes paginate and remove only matching bindings", asyn
 });
 
 test("an index upsert protects a replacement binding from stale deletion", async () => {
-  const stub = env.SESSION_AFFINITY_INDEX.getByName(`replace-${crypto.randomUUID()}`);
+  const stub = env.SESSION_AFFINITY_INDEX.getByName(
+    `replace-${crypto.randomUUID()}`,
+  );
   const sessionDigest = digest("d");
   await stub.register({
     session_digest: sessionDigest,

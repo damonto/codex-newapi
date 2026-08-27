@@ -1,7 +1,4 @@
-import {
-  randomEntry,
-  type RandomSource,
-} from "./random.ts";
+import { randomEntry, type RandomSource } from "./random.ts";
 
 export const SESSION_AFFINITY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const SESSION_AFFINITY_INDEX_MAX_PAGE_SIZE = 1000;
@@ -60,22 +57,32 @@ export function chooseAffinityCandidate(
   candidates: AffinityServiceCandidate[],
   random?: AffinityRandomSource,
 ): AffinitySelection | undefined {
-  const usableServices = candidates.filter((candidate) => candidate.keys.length > 0);
+  const usableServices = candidates.filter(
+    (candidate) => candidate.keys.length > 0,
+  );
   if (usableServices.length === 0) {
     return undefined;
   }
-  const servicePriority = Math.max(...usableServices.map((candidate) => candidate.priority));
-  const tiedServices = usableServices.filter((candidate) => candidate.priority === servicePriority);
-  const service = random === undefined
-    ? tiedServices[0]
-    : randomEntry(tiedServices, random);
+  const servicePriority = Math.max(
+    ...usableServices.map((candidate) => candidate.priority),
+  );
+  const tiedServices = usableServices.filter(
+    (candidate) => candidate.priority === servicePriority,
+  );
+  const service =
+    random === undefined ? tiedServices[0] : randomEntry(tiedServices, random);
   if (!service) {
     return undefined;
   }
   const keyPriority = Math.max(...service.keys.map((key) => key.priority));
-  const tiedKeys = service.keys.filter((candidate) => candidate.priority === keyPriority);
-  const key = random === undefined ? tiedKeys[0] : randomEntry(tiedKeys, random);
-  return key ? { service_id: service.service_id, key_id: key.key_id } : undefined;
+  const tiedKeys = service.keys.filter(
+    (candidate) => candidate.priority === keyPriority,
+  );
+  const key =
+    random === undefined ? tiedKeys[0] : randomEntry(tiedKeys, random);
+  return key
+    ? { service_id: service.service_id, key_id: key.key_id }
+    : undefined;
 }
 
 export function affinitySelectionIsHighestPriority(
@@ -85,8 +92,10 @@ export function affinitySelectionIsHighestPriority(
   if (!selection) {
     return false;
   }
-  const service = candidates.find((candidate) =>
-    candidate.service_id === selection.service_id && candidate.keys.length > 0
+  const service = candidates.find(
+    (candidate) =>
+      candidate.service_id === selection.service_id &&
+      candidate.keys.length > 0,
   );
   if (!service) {
     return false;
@@ -99,11 +108,15 @@ export function affinitySelectionIsHighestPriority(
   if (service.priority !== highestServicePriority) {
     return false;
   }
-  const key = service.keys.find((candidate) => candidate.key_id === selection.key_id);
+  const key = service.keys.find(
+    (candidate) => candidate.key_id === selection.key_id,
+  );
   if (!key) {
     return false;
   }
-  const highestKeyPriority = Math.max(...service.keys.map((candidate) => candidate.priority));
+  const highestKeyPriority = Math.max(
+    ...service.keys.map((candidate) => candidate.priority),
+  );
   return key.priority === highestKeyPriority;
 }
 
@@ -122,10 +135,13 @@ function choosePreferredOrRandomWithinService(
   preferred: AffinitySelection | undefined,
   random: AffinityRandomSource | undefined,
 ): AffinitySelection | undefined {
-  const highestKeyPriority = Math.max(...service.keys.map((candidate) => candidate.priority));
-  const preferredKey = preferred?.service_id === service.service_id
-    ? service.keys.find((candidate) => candidate.key_id === preferred.key_id)
-    : undefined;
+  const highestKeyPriority = Math.max(
+    ...service.keys.map((candidate) => candidate.priority),
+  );
+  const preferredKey =
+    preferred?.service_id === service.service_id
+      ? service.keys.find((candidate) => candidate.key_id === preferred.key_id)
+      : undefined;
   return preferredKey?.priority === highestKeyPriority
     ? preferred
     : chooseAffinityCandidate([service], random);
@@ -139,15 +155,19 @@ export function resolveStoredAffinity(
 ): StoredAffinityDecision {
   const fallback = (): AffinitySelection | undefined =>
     choosePreferredOrRandom(candidates, preferred, random);
-  const service = candidates.find((candidate) =>
-    candidate.service_id === record.service_id
+  const service = candidates.find(
+    (candidate) => candidate.service_id === record.service_id,
   );
-  const key = service?.keys.find((candidate) => candidate.key_id === record.key_id);
+  const key = service?.keys.find(
+    (candidate) => candidate.key_id === record.key_id,
+  );
   if (!service || !key) {
     return { selection: fallback(), status: "rebound" };
   }
 
-  const usableServices = candidates.filter((candidate) => candidate.keys.length > 0);
+  const usableServices = candidates.filter(
+    (candidate) => candidate.keys.length > 0,
+  );
   const highestServicePriority = Math.max(
     ...usableServices.map((candidate) => candidate.priority),
   );
@@ -155,10 +175,16 @@ export function resolveStoredAffinity(
     return { selection: fallback(), status: "rebound" };
   }
 
-  const highestKeyPriority = Math.max(...service.keys.map((candidate) => candidate.priority));
+  const highestKeyPriority = Math.max(
+    ...service.keys.map((candidate) => candidate.priority),
+  );
   if (key.priority < highestKeyPriority) {
     return {
-      selection: choosePreferredOrRandomWithinService(service, preferred, random),
+      selection: choosePreferredOrRandomWithinService(
+        service,
+        preferred,
+        random,
+      ),
       status: "rebound",
     };
   }

@@ -7,13 +7,7 @@ import {
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import {
-  afterEach,
-  beforeEach,
-  expect,
-  test,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { clearConfigCacheForTests } from "../../src/config.ts";
 import { FAILURE_THRESHOLD } from "../../src/health.ts";
@@ -40,30 +34,34 @@ interface UpstreamPair {
 
 function gatewayConfig(): GatewayConfig {
   return {
-    services: [{
-      id: "primary",
-      base_url: "https://primary.example/v1",
-      keys: [
-        {
-          id: "primary-key",
-          api_key: "primary-secret",
-          disabled: false,
-          priority: 100,
-        },
-        {
-          id: "backup-key",
-          api_key: "backup-secret",
-          disabled: false,
-          priority: 50,
-        },
-      ],
-      disabled: false,
-      priority: 100,
-      supports_websocket: true,
-      supports_web_search: false,
-      models: ["upstream-model", "other-model"],
-    }],
-    api_keys: [{ id: "client", api_key: "client-secret", services: ["primary"] }],
+    services: [
+      {
+        id: "primary",
+        base_url: "https://primary.example/v1",
+        keys: [
+          {
+            id: "primary-key",
+            api_key: "primary-secret",
+            disabled: false,
+            priority: 100,
+          },
+          {
+            id: "backup-key",
+            api_key: "backup-secret",
+            disabled: false,
+            priority: 50,
+          },
+        ],
+        disabled: false,
+        priority: 100,
+        supports_websocket: true,
+        supports_web_search: false,
+        models: ["upstream-model", "other-model"],
+      },
+    ],
+    api_keys: [
+      { id: "client", api_key: "client-secret", services: ["primary"] },
+    ],
     web_search: { mode: "proxy" },
     model_routes: {
       "client-model": { model: "upstream-model" },
@@ -172,7 +170,7 @@ async function nextUpstreamMessage(
     "upstream websocket message",
   );
   return message.kind === "text"
-    ? message.data as string
+    ? (message.data as string)
     : new Uint8Array(message.data as number[]).buffer;
 }
 
@@ -205,13 +203,16 @@ async function sendAndCloseUpstream(
   reason: string,
 ): Promise<void> {
   await testUpstream().fetch(
-    new Request(upstreamControlUrl(upstream, "/__test/send-and-close", {
-      code: String(code),
-      reason,
-    }), {
-      method: "POST",
-      body: message,
-    }),
+    new Request(
+      upstreamControlUrl(upstream, "/__test/send-and-close", {
+        code: String(code),
+        reason,
+      }),
+      {
+        method: "POST",
+        body: message,
+      },
+    ),
   );
 }
 
@@ -221,17 +222,23 @@ async function closeUpstream(
   reason: string,
 ): Promise<void> {
   await testUpstream().fetch(
-    new Request(upstreamControlUrl(upstream, "/__test/close", {
-      code: String(code),
-      reason,
-    }), { method: "POST" }),
+    new Request(
+      upstreamControlUrl(upstream, "/__test/close", {
+        code: String(code),
+        reason,
+      }),
+      { method: "POST" },
+    ),
   );
 }
 
 function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 2_000);
+    timer = setTimeout(
+      () => reject(new Error(`timed out waiting for ${label}`)),
+      2_000,
+    );
   });
   return Promise.race([promise, timeout]).finally(() => {
     if (timer !== undefined) {
@@ -241,26 +248,41 @@ function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
 }
 
 function nextMessage(socket: WebSocket): Promise<string | ArrayBuffer> {
-  return withTimeout(new Promise((resolve) => {
-    socket.addEventListener("message", (event) => {
-      if (typeof event.data === "string" || event.data instanceof ArrayBuffer) {
-        resolve(event.data);
-        return;
-      }
-      if (event.data instanceof Blob) {
-        void event.data.arrayBuffer().then(resolve);
-      }
-    }, { once: true });
-  }), "websocket message");
+  return withTimeout(
+    new Promise((resolve) => {
+      socket.addEventListener(
+        "message",
+        (event) => {
+          if (
+            typeof event.data === "string" ||
+            event.data instanceof ArrayBuffer
+          ) {
+            resolve(event.data);
+            return;
+          }
+          if (event.data instanceof Blob) {
+            void event.data.arrayBuffer().then(resolve);
+          }
+        },
+        { once: true },
+      );
+    }),
+    "websocket message",
+  );
 }
 
 function nextClose(socket: WebSocket): Promise<CloseEvent> {
-  return withTimeout(new Promise((resolve) => {
-    socket.addEventListener("close", resolve, { once: true });
-  }), "websocket close");
+  return withTimeout(
+    new Promise((resolve) => {
+      socket.addEventListener("close", resolve, { once: true });
+    }),
+    "websocket close",
+  );
 }
 
-async function putConfig(config: ReturnType<typeof gatewayConfig>): Promise<void> {
+async function putConfig(
+  config: ReturnType<typeof gatewayConfig>,
+): Promise<void> {
   clearConfigCacheForTests();
   await env.CODY_CONFIG_KV.put("gateway-config", JSON.stringify(config));
 }
@@ -285,7 +307,9 @@ async function openGatewaySocket(
   proxy: DurableObjectStub;
 }> {
   const existingIds = new Set(
-    (await listDurableObjectIds(env.RESPONSES_WEBSOCKET)).map((id) => id.toString()),
+    (await listDurableObjectIds(env.RESPONSES_WEBSOCKET)).map((id) =>
+      id.toString(),
+    ),
   );
   const context = createExecutionContext();
   const response = await worker.fetch(
@@ -306,8 +330,9 @@ async function openGatewaySocket(
   const socket = response.webSocket!;
   socket.binaryType = "arraybuffer";
   socket.accept({ allowHalfOpen: true });
-  const createdId = (await listDurableObjectIds(env.RESPONSES_WEBSOCKET))
-    .find((id) => !existingIds.has(id.toString()));
+  const createdId = (await listDurableObjectIds(env.RESPONSES_WEBSOCKET)).find(
+    (id) => !existingIds.has(id.toString()),
+  );
   if (!createdId) {
     throw new Error("Responses WebSocket Durable Object was not created");
   }
@@ -333,23 +358,24 @@ test("responses WebSocket rewrites the first model and proxies headers, text, bi
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
   let capturedRequest: Request | undefined;
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    capturedRequest = input instanceof Request ? input : new Request(input, init);
-    return openUpstream(upstream);
-  }));
-
-  const { socket, context } = await openGatewaySocket(
-    "/responses?trace=yes",
-    {
-      "cf-connecting-ip": "203.0.113.8",
-      "sec-websocket-key": "client-generated",
-      "session-id": "websocket-session",
-      "x-openai-actor-authorization": "cody",
-      "x-oai-attestation": "device-attestation",
-      "chatgpt-account-id": "account-id",
-      "x-tenant": "tenant-a",
-    },
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedRequest =
+        input instanceof Request ? input : new Request(input, init);
+      return openUpstream(upstream);
+    }),
   );
+
+  const { socket, context } = await openGatewaySocket("/responses?trace=yes", {
+    "cf-connecting-ip": "203.0.113.8",
+    "sec-websocket-key": "client-generated",
+    "session-id": "websocket-session",
+    "x-openai-actor-authorization": "cody",
+    "x-oai-attestation": "device-attestation",
+    "chatgpt-account-id": "account-id",
+    "x-tenant": "tenant-a",
+  });
   const originalFirstFrame = JSON.stringify({
     type: "response.create",
     model: "client-model",
@@ -358,21 +384,27 @@ test("responses WebSocket rewrites the first model and proxies headers, text, bi
   });
   const upstreamFirstMessage = nextUpstreamMessage(upstream);
   socket.send(originalFirstFrame);
-  expect(JSON.parse(await upstreamFirstMessage as string)).toEqual({
+  expect(JSON.parse((await upstreamFirstMessage) as string)).toEqual({
     type: "response.create",
     model: "upstream-model",
     client_metadata: { session_id: "metadata-session" },
     input: "hello",
   });
 
-  expect(capturedRequest?.url).toBe("https://primary.example/v1/responses?trace=yes");
+  expect(capturedRequest?.url).toBe(
+    "https://primary.example/v1/responses?trace=yes",
+  );
   expect(capturedRequest?.method).toBe("GET");
-  expect(capturedRequest?.headers.get("authorization")).toBe("Bearer primary-secret");
+  expect(capturedRequest?.headers.get("authorization")).toBe(
+    "Bearer primary-secret",
+  );
   expect(capturedRequest?.headers.get("upgrade")).toBe("websocket");
   expect(capturedRequest?.headers.get("x-tenant")).toBe("tenant-a");
   expect(capturedRequest?.headers.get("cf-connecting-ip")).toBeNull();
   expect(capturedRequest?.headers.get("sec-websocket-key")).toBeNull();
-  expect(capturedRequest?.headers.get("x-openai-actor-authorization")).toBeNull();
+  expect(
+    capturedRequest?.headers.get("x-openai-actor-authorization"),
+  ).toBeNull();
   expect(capturedRequest?.headers.get("x-oai-attestation")).toBeNull();
   expect(capturedRequest?.headers.get("chatgpt-account-id")).toBeNull();
 
@@ -381,17 +413,24 @@ test("responses WebSocket rewrites the first model and proxies headers, text, bi
     upstream,
     '{"type":"response.output_text.delta","delta":"hello"}',
   );
-  expect(await clientText).toBe('{"type":"response.output_text.delta","delta":"hello"}');
+  expect(await clientText).toBe(
+    '{"type":"response.output_text.delta","delta":"hello"}',
+  );
 
   const upstreamBinary = nextUpstreamMessage(upstream);
   socket.send(new Uint8Array([1, 2, 3]).buffer);
-  expect([...new Uint8Array(await upstreamBinary as ArrayBuffer)]).toEqual([1, 2, 3]);
+  expect([...new Uint8Array((await upstreamBinary) as ArrayBuffer)]).toEqual([
+    1, 2, 3,
+  ]);
 
   const clientBinary = nextMessage(socket);
   await sendUpstream(upstream, new Uint8Array([4, 5, 6]).buffer);
-  expect([...new Uint8Array(await clientBinary as ArrayBuffer)]).toEqual([4, 5, 6]);
+  expect([...new Uint8Array((await clientBinary) as ArrayBuffer)]).toEqual([
+    4, 5, 6,
+  ]);
 
-  const unchangedFrame = '{ "type": "response.create", "model": "upstream-model", "input": "next" }';
+  const unchangedFrame =
+    '{ "type": "response.create", "model": "upstream-model", "input": "next" }';
   const unchangedUpstream = nextUpstreamMessage(upstream);
   socket.send(unchangedFrame);
   expect(await unchangedUpstream).toBe(unchangedFrame);
@@ -423,22 +462,30 @@ test("responses WebSocket applies per-client model routes over the global routes
   await putConfig(config);
   const upstream = upstreamPair();
   let capturedRequest: Request | undefined;
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    capturedRequest = input instanceof Request ? input : new Request(input, init);
-    return openUpstream(upstream);
-  }));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedRequest =
+        input instanceof Request ? input : new Request(input, init);
+      return openUpstream(upstream);
+    }),
+  );
 
   const { socket } = await openGatewaySocket("/v1/responses", {
     authorization: "Bearer per-key-client-secret",
   });
   const upstreamFirstMessage = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
-  expect(JSON.parse(await upstreamFirstMessage as string)).toMatchObject({
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
+  expect(JSON.parse((await upstreamFirstMessage) as string)).toMatchObject({
     type: "response.create",
     model: "other-model",
   });
   expect(capturedRequest?.url).toBe("https://primary.example/v1/responses");
-  expect(capturedRequest?.headers.get("authorization")).toBe("Bearer primary-secret");
+  expect(capturedRequest?.headers.get("authorization")).toBe(
+    "Bearer primary-secret",
+  );
 
   const upstreamClosed = nextUpstreamClose(upstream);
   socket.close(1000, "done");
@@ -451,12 +498,14 @@ test("responses WebSocket skips higher-priority services without WebSocket suppo
   config.services.push({
     id: "websocket",
     base_url: "https://websocket.example/v1",
-    keys: [{
-      id: "websocket-key",
-      api_key: "websocket-secret",
-      disabled: false,
-      priority: 100,
-    }],
+    keys: [
+      {
+        id: "websocket-key",
+        api_key: "websocket-secret",
+        disabled: false,
+        priority: 100,
+      },
+    ],
     disabled: false,
     priority: 50,
     supports_websocket: true,
@@ -467,18 +516,26 @@ test("responses WebSocket skips higher-priority services without WebSocket suppo
   await putConfig(config);
   const upstream = upstreamPair();
   let capturedRequest: Request | undefined;
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    capturedRequest = input instanceof Request ? input : new Request(input, init);
-    return openUpstream(upstream);
-  }));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedRequest =
+        input instanceof Request ? input : new Request(input, init);
+      return openUpstream(upstream);
+    }),
+  );
 
   const { socket } = await openGatewaySocket();
   const firstMessage = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await firstMessage;
 
   expect(capturedRequest?.url).toBe("https://websocket.example/v1/responses");
-  expect(capturedRequest?.headers.get("authorization")).toBe("Bearer websocket-secret");
+  expect(capturedRequest?.headers.get("authorization")).toBe(
+    "Bearer websocket-secret",
+  );
 
   const upstreamClosed = nextUpstreamClose(upstream);
   socket.close(1000, "done");
@@ -495,9 +552,11 @@ test("responses WebSocket does not connect when no service declares WebSocket su
   const { socket } = await openGatewaySocket();
   const errorMessage = nextMessage(socket);
   const closed = nextClose(socket);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
 
-  expect(JSON.parse(await errorMessage as string)).toMatchObject({
+  expect(JSON.parse((await errorMessage) as string)).toMatchObject({
     type: "error",
     status: 400,
     error: { code: "model_not_found" },
@@ -515,7 +574,7 @@ test("the first frame must be a response.create JSON text frame", async () => {
   const closed = nextClose(socket);
 
   socket.send(new Uint8Array([1, 2, 3]).buffer);
-  expect(JSON.parse(await errorMessage as string)).toMatchObject({
+  expect(JSON.parse((await errorMessage) as string)).toMatchObject({
     type: "error",
     status: 400,
     error: { code: "invalid_websocket_first_frame" },
@@ -533,15 +592,18 @@ test("a WebSocket session emits one structured terminal lifecycle log", async ()
   try {
     const { socket } = await openGatewaySocket();
     const closed = nextClose(socket);
-    socket.send(JSON.stringify({ type: "response.create", input: "missing model" }));
+    socket.send(
+      JSON.stringify({ type: "response.create", input: "missing model" }),
+    );
     expect((await closed).code).toBe(1008);
 
     const lifecycle = warn.mock.calls
       .map(([entry]) => entry)
-      .filter((entry) =>
-        typeof entry === "object" &&
-        entry !== null &&
-        (entry as { event?: unknown }).event === "websocket.closed"
+      .filter(
+        (entry) =>
+          typeof entry === "object" &&
+          entry !== null &&
+          (entry as { event?: unknown }).event === "websocket.closed",
       );
     expect(lifecycle).toHaveLength(1);
     expect(lifecycle[0]).toMatchObject({
@@ -576,7 +638,7 @@ test("a connection without a valid first frame times out after 10 seconds", asyn
   });
 
   expect(await runDurableObjectAlarm(proxy)).toBe(true);
-  expect(JSON.parse(await errorMessage as string)).toMatchObject({
+  expect(JSON.parse((await errorMessage) as string)).toMatchObject({
     type: "error",
     status: 408,
     error: { code: "websocket_first_frame_timeout" },
@@ -602,7 +664,9 @@ test("an expired first-frame alarm cannot close a session already claimed for ro
 
   expect(await runDurableObjectAlarm(proxy)).toBe(true);
   await runInDurableObject(proxy, async (_instance, state) => {
-    expect(await state.storage.get("session")).toMatchObject({ phase: "routing" });
+    expect(await state.storage.get("session")).toMatchObject({
+      phase: "routing",
+    });
   });
   expect(socket.readyState).toBe(WebSocket.OPEN);
   const closed = nextClose(socket);
@@ -629,14 +693,20 @@ test("more than 32 MiB of queued client messages closes the connection", async (
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
     return new Promise<Response>((_resolve, reject) => {
-      request.signal.addEventListener("abort", () => {
-        reject(new DOMException("aborted", "AbortError"));
-      }, { once: true });
+      request.signal.addEventListener(
+        "abort",
+        () => {
+          reject(new DOMException("aborted", "AbortError"));
+        },
+        { once: true },
+      );
     });
   });
   vi.stubGlobal("fetch", fetchMock);
   const { socket } = await openGatewaySocket();
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
 
   const errorMessage = nextMessage(socket);
@@ -645,7 +715,7 @@ test("more than 32 MiB of queued client messages closes the connection", async (
   socket.send(chunk);
   socket.send(chunk.slice(0));
 
-  expect(JSON.parse(await errorMessage as string)).toMatchObject({
+  expect(JSON.parse((await errorMessage) as string)).toMatchObject({
     type: "error",
     status: 413,
     error: { code: "websocket_queue_too_large" },
@@ -656,14 +726,19 @@ test("more than 32 MiB of queued client messages closes the connection", async (
 test("the client WebSocket survives Durable Object hibernation before routing", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
-  vi.stubGlobal("fetch", vi.fn(async () => openUpstream(upstream)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => openUpstream(upstream)),
+  );
 
   const { socket, proxy } = await openGatewaySocket();
   await evictDurableObject(proxy);
 
   const firstUpstreamMessage = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
-  expect(JSON.parse(await firstUpstreamMessage as string)).toMatchObject({
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
+  expect(JSON.parse((await firstUpstreamMessage) as string)).toMatchObject({
     type: "response.create",
     model: "upstream-model",
   });
@@ -680,7 +755,9 @@ test("closing during the upstream handshake cannot revive a closed session", asy
   vi.stubGlobal("fetch", fetchMock);
 
   const { socket, proxy } = await openGatewaySocket();
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
 
   socket.close(1000, "client left");
@@ -700,17 +777,20 @@ test("closing during the upstream handshake cannot revive a closed session", asy
 test("an upstream WebSocket handshake times out after 10 seconds", async () => {
   await putConfig(gatewayConfig());
   const realSetTimeout = globalThis.setTimeout;
-  vi.stubGlobal("setTimeout", (
-    callback: (...args: unknown[]) => void,
-    delay?: number,
-    ...args: unknown[]
-  ): number => {
-    if (delay === 10_000) {
-      callback(...args);
-      return 0;
-    }
-    return realSetTimeout(callback, delay, ...args);
-  });
+  vi.stubGlobal(
+    "setTimeout",
+    (
+      callback: (...args: unknown[]) => void,
+      delay?: number,
+      ...args: unknown[]
+    ): number => {
+      if (delay === 10_000) {
+        callback(...args);
+        return 0;
+      }
+      return realSetTimeout(callback, delay, ...args);
+    },
+  );
   let requestAborted = false;
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -720,28 +800,41 @@ test("an upstream WebSocket handshake times out after 10 seconds", async () => {
         reject(request.signal.reason);
         return;
       }
-      request.signal.addEventListener("abort", () => {
-        requestAborted = true;
-        reject(request.signal.reason);
-      }, { once: true });
+      request.signal.addEventListener(
+        "abort",
+        () => {
+          requestAborted = true;
+          reject(request.signal.reason);
+        },
+        { once: true },
+      );
     });
   });
   vi.stubGlobal("fetch", fetchMock);
 
   const { socket } = await openGatewaySocket();
   const errorMessage = new Promise<string | ArrayBuffer>((resolve) => {
-    socket.addEventListener("message", (event) => {
-      if (typeof event.data === "string" || event.data instanceof ArrayBuffer) {
-        resolve(event.data);
-      }
-    }, { once: true });
+    socket.addEventListener(
+      "message",
+      (event) => {
+        if (
+          typeof event.data === "string" ||
+          event.data instanceof ArrayBuffer
+        ) {
+          resolve(event.data);
+        }
+      },
+      { once: true },
+    );
   });
   const closed = new Promise<CloseEvent>((resolve) => {
     socket.addEventListener("close", resolve, { once: true });
   });
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
 
-  expect(JSON.parse(await errorMessage as string)).toMatchObject({
+  expect(JSON.parse((await errorMessage) as string)).toMatchObject({
     type: "error",
     status: 504,
     error: { code: "upstream_handshake_timeout" },
@@ -750,7 +843,9 @@ test("an upstream WebSocket handshake times out after 10 seconds", async () => {
   expect(fetchMock).toHaveBeenCalledOnce();
   expect(requestAborted).toBe(true);
   await vi.waitFor(async () => {
-    expect((await env.HEALTH.getByName("primary").getStatus()).failures).toBe(1);
+    expect((await env.HEALTH.getByName("primary").getStatus()).failures).toBe(
+      1,
+    );
   });
 });
 
@@ -762,24 +857,30 @@ test("a retrying 403 handshake cools the key, keeps the same key for retry, then
   const reboundUpstream = upstreamPair();
   const authorizations: string[] = [];
   let attempt = 0;
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    authorizations.push(request.headers.get("authorization") ?? "");
-    attempt += 1;
-    if (attempt === 1) {
-      return new Response('{"error":"forbidden"}', { status: 403 });
-    }
-    return attempt === 2
-      ? openUpstream(retryUpstream)
-      : openUpstream(reboundUpstream);
-  }));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      authorizations.push(request.headers.get("authorization") ?? "");
+      attempt += 1;
+      if (attempt === 1) {
+        return new Response('{"error":"forbidden"}', { status: 403 });
+      }
+      return attempt === 2
+        ? openUpstream(retryUpstream)
+        : openUpstream(reboundUpstream);
+    }),
+  );
 
   const first = await openGatewaySocket("/v1/responses", {
     "session-id": "retry-session",
   });
   const firstUpstreamMessage = nextUpstreamMessage(retryUpstream);
-  first.socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
-  expect(JSON.parse(await firstUpstreamMessage as string)).toMatchObject({
+  first.socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
+  expect(JSON.parse((await firstUpstreamMessage) as string)).toMatchObject({
     type: "response.create",
     model: "upstream-model",
   });
@@ -789,7 +890,8 @@ test("a retrying 403 handshake cools the key, keeps the same key for retry, then
     "Bearer primary-secret",
   ]);
   expect(
-    (await env.HEALTH.getByName("key:primary:primary-key").getStatus()).cooling_until,
+    (await env.HEALTH.getByName("key:primary:primary-key").getStatus())
+      .cooling_until,
   ).toBeTypeOf("number");
 
   const firstUpstreamClosed = nextUpstreamClose(retryUpstream);
@@ -800,8 +902,10 @@ test("a retrying 403 handshake cools the key, keeps the same key for retry, then
     "session-id": "retry-session",
   });
   const secondUpstreamMessage = nextUpstreamMessage(reboundUpstream);
-  second.socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
-  expect(JSON.parse(await secondUpstreamMessage as string)).toMatchObject({
+  second.socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
+  expect(JSON.parse((await secondUpstreamMessage) as string)).toMatchObject({
     type: "response.create",
     model: "upstream-model",
   });
@@ -814,17 +918,23 @@ test("a retrying 403 handshake cools the key, keeps the same key for retry, then
 
 test("a final upstream handshake rejection is forwarded and records service health", async () => {
   await putConfig(gatewayConfig());
-  vi.stubGlobal("fetch", vi.fn(async () =>
-    new Response('{"error":"temporarily unavailable"}', {
-      status: 503,
-      headers: { "content-type": "application/json" },
-    })
-  ));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response('{"error":"temporarily unavailable"}', {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        }),
+    ),
+  );
 
   const { socket, context } = await openGatewaySocket();
   const errorMessage = nextMessage(socket);
   const closed = nextClose(socket);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
 
   expect(await errorMessage).toBe('{"error":"temporarily unavailable"}');
   expect((await closed).code).toBe(1011);
@@ -835,10 +945,15 @@ test("a final upstream handshake rejection is forwarded and records service heal
 test("an upstream 402 frame is processed before an immediate close", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
-  vi.stubGlobal("fetch", vi.fn(async () => openUpstream(upstream)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => openUpstream(upstream)),
+  );
   const { socket, context } = await openGatewaySocket();
   const upstreamFirst = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await upstreamFirst;
 
   const errorFrame = JSON.stringify({
@@ -858,7 +973,8 @@ test("an upstream 402 frame is processed before an immediate close", async () =>
   await upstreamClosed;
   await waitOnExecutionContext(context);
   expect(
-    (await env.HEALTH.getByName("key:primary:primary-key").getStatus()).cooling_until,
+    (await env.HEALTH.getByName("key:primary:primary-key").getStatus())
+      .cooling_until,
   ).toBeTypeOf("number");
   expect((await env.HEALTH.getByName("primary").getStatus()).failures).toBe(0);
 });
@@ -866,10 +982,15 @@ test("an upstream 402 frame is processed before an immediate close", async () =>
 test("an upstream 403 frame cools the key when the client socket is unavailable", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
-  vi.stubGlobal("fetch", vi.fn(async () => openUpstream(upstream)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => openUpstream(upstream)),
+  );
   const { socket, proxy, context } = await openGatewaySocket();
   const upstreamFirst = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await upstreamFirst;
 
   await runInDurableObject(proxy, async (_instance, state) => {
@@ -881,29 +1002,38 @@ test("an upstream 403 frame cools the key when the client socket is unavailable"
   });
 
   const upstreamClosed = nextUpstreamClose(upstream);
-  await sendUpstream(upstream, JSON.stringify({
-    type: "error",
-    error: {
-      status_code: 403,
-      code: "forbidden",
-      message: "access denied",
-    },
-  }));
+  await sendUpstream(
+    upstream,
+    JSON.stringify({
+      type: "error",
+      error: {
+        status_code: 403,
+        code: "forbidden",
+        message: "access denied",
+      },
+    }),
+  );
   await upstreamClosed;
   await waitOnExecutionContext(context);
 
   expect(
-    (await env.HEALTH.getByName("key:primary:primary-key").getStatus()).cooling_until,
+    (await env.HEALTH.getByName("key:primary:primary-key").getStatus())
+      .cooling_until,
   ).toBeTypeOf("number");
 });
 
 test("every upstream error frame is forwarded before the connection closes", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
-  vi.stubGlobal("fetch", vi.fn(async () => openUpstream(upstream)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => openUpstream(upstream)),
+  );
   const { socket } = await openGatewaySocket();
   const upstreamFirst = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await upstreamFirst;
 
   const errorFrame = JSON.stringify({
@@ -923,10 +1053,15 @@ test("every upstream error frame is forwarded before the connection closes", asy
 test("an unexpected upstream close propagates and records a service failure", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
-  vi.stubGlobal("fetch", vi.fn(async () => openUpstream(upstream)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => openUpstream(upstream)),
+  );
   const { socket, context } = await openGatewaySocket();
   const firstFrame = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await firstFrame;
 
   const clientClosed = nextClose(socket);
@@ -939,10 +1074,15 @@ test("an unexpected upstream close propagates and records a service failure", as
 test("an upstream close while connecting records a service failure", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
-  vi.stubGlobal("fetch", vi.fn(async () => openUpstream(upstream)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => openUpstream(upstream)),
+  );
   const { socket, proxy, context } = await openGatewaySocket();
   const firstFrame = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await firstFrame;
 
   await runInDurableObject(proxy, async (_instance, state) => {
@@ -971,12 +1111,14 @@ test("a later response.create that requires another target closes and rebinds on
     {
       id: "first",
       base_url: "https://first.example/v1",
-      keys: [{
-        id: "first-key",
-        api_key: "first-secret",
-        disabled: false,
-        priority: 100,
-      }],
+      keys: [
+        {
+          id: "first-key",
+          api_key: "first-secret",
+          disabled: false,
+          priority: 100,
+        },
+      ],
       disabled: false,
       priority: 100,
       supports_websocket: true,
@@ -986,12 +1128,14 @@ test("a later response.create that requires another target closes and rebinds on
     {
       id: "second",
       base_url: "https://second.example/v1",
-      keys: [{
-        id: "second-key",
-        api_key: "second-secret",
-        disabled: false,
-        priority: 100,
-      }],
+      keys: [
+        {
+          id: "second-key",
+          api_key: "second-secret",
+          disabled: false,
+          priority: 100,
+        },
+      ],
       disabled: false,
       priority: 100,
       supports_websocket: true,
@@ -1008,27 +1152,35 @@ test("a later response.create that requires another target closes and rebinds on
   const firstUpstream = upstreamPair();
   const secondUpstream = upstreamPair();
   const authorizations: string[] = [];
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    authorizations.push(request.headers.get("authorization") ?? "");
-    return authorizations.length === 1
-      ? openUpstream(firstUpstream)
-      : openUpstream(secondUpstream);
-  }));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      authorizations.push(request.headers.get("authorization") ?? "");
+      return authorizations.length === 1
+        ? openUpstream(firstUpstream)
+        : openUpstream(secondUpstream);
+    }),
+  );
 
   const first = await openGatewaySocket("/v1/responses", {
     "session-id": "model-switch-session",
   });
   const firstUpstreamMessage = nextUpstreamMessage(firstUpstream);
-  first.socket.send(JSON.stringify({ type: "response.create", model: "client-a" }));
+  first.socket.send(
+    JSON.stringify({ type: "response.create", model: "client-a" }),
+  );
   await firstUpstreamMessage;
   expect(authorizations[0]).toBe("Bearer first-secret");
 
   const reconnectError = nextMessage(first.socket);
   const firstClosed = nextClose(first.socket);
   const firstUpstreamClosed = nextUpstreamClose(firstUpstream);
-  first.socket.send(JSON.stringify({ type: "response.create", model: "client-b" }));
-  expect(JSON.parse(await reconnectError as string)).toMatchObject({
+  first.socket.send(
+    JSON.stringify({ type: "response.create", model: "client-b" }),
+  );
+  expect(JSON.parse((await reconnectError) as string)).toMatchObject({
     type: "error",
     error: { code: "websocket_reconnect_required" },
   });
@@ -1040,8 +1192,10 @@ test("a later response.create that requires another target closes and rebinds on
     "session-id": "model-switch-session",
   });
   const secondUpstreamMessage = nextUpstreamMessage(secondUpstream);
-  second.socket.send(JSON.stringify({ type: "response.create", model: "client-b" }));
-  expect(JSON.parse(await secondUpstreamMessage as string)).toMatchObject({
+  second.socket.send(
+    JSON.stringify({ type: "response.create", model: "client-b" }),
+  );
+  expect(JSON.parse((await secondUpstreamMessage) as string)).toMatchObject({
     type: "response.create",
     model: "model-b",
   });
@@ -1058,12 +1212,14 @@ test("a recovered higher-priority service changes affinity and requires WebSocke
     {
       id: "higher",
       base_url: "https://higher.example/v1",
-      keys: [{
-        id: "higher-key",
-        api_key: "higher-secret",
-        disabled: false,
-        priority: 10,
-      }],
+      keys: [
+        {
+          id: "higher-key",
+          api_key: "higher-secret",
+          disabled: false,
+          priority: 10,
+        },
+      ],
       disabled: false,
       priority: 100,
       supports_websocket: true,
@@ -1073,12 +1229,14 @@ test("a recovered higher-priority service changes affinity and requires WebSocke
     {
       id: "lower",
       base_url: "https://lower.example/v1",
-      keys: [{
-        id: "lower-key",
-        api_key: "lower-secret",
-        disabled: false,
-        priority: 100,
-      }],
+      keys: [
+        {
+          id: "lower-key",
+          api_key: "lower-secret",
+          disabled: false,
+          priority: 100,
+        },
+      ],
       disabled: false,
       priority: 10,
       supports_websocket: true,
@@ -1095,19 +1253,25 @@ test("a recovered higher-priority service changes affinity and requires WebSocke
   const lowerUpstream = upstreamPair();
   const higherUpstream = upstreamPair();
   const authorizations: string[] = [];
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = input instanceof Request ? input : new Request(input, init);
-    authorizations.push(request.headers.get("authorization") ?? "");
-    return authorizations.length === 1
-      ? openUpstream(lowerUpstream)
-      : openUpstream(higherUpstream);
-  }));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      authorizations.push(request.headers.get("authorization") ?? "");
+      return authorizations.length === 1
+        ? openUpstream(lowerUpstream)
+        : openUpstream(higherUpstream);
+    }),
+  );
 
   const first = await openGatewaySocket("/v1/responses", {
     "session-id": "priority-upgrade-session",
   });
   const firstMessage = nextUpstreamMessage(lowerUpstream);
-  first.socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  first.socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await firstMessage;
   expect(authorizations[0]).toBe("Bearer lower-secret");
 
@@ -1115,8 +1279,10 @@ test("a recovered higher-priority service changes affinity and requires WebSocke
   const reconnectError = nextMessage(first.socket);
   const firstClosed = nextClose(first.socket);
   const lowerClosed = nextUpstreamClose(lowerUpstream);
-  first.socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
-  expect(JSON.parse(await reconnectError as string)).toMatchObject({
+  first.socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
+  expect(JSON.parse((await reconnectError) as string)).toMatchObject({
     type: "error",
     error: { code: "websocket_reconnect_required" },
   });
@@ -1127,7 +1293,9 @@ test("a recovered higher-priority service changes affinity and requires WebSocke
     "session-id": "priority-upgrade-session",
   });
   const secondMessage = nextUpstreamMessage(higherUpstream);
-  second.socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  second.socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await secondMessage;
   expect(authorizations[1]).toBe("Bearer higher-secret");
 
@@ -1140,11 +1308,16 @@ test("a later response.create reloads configuration and closes when WebSocket su
   const config = gatewayConfig();
   await putConfig(config);
   const upstream = upstreamPair();
-  vi.stubGlobal("fetch", vi.fn(async () => openUpstream(upstream)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => openUpstream(upstream)),
+  );
 
   const { socket } = await openGatewaySocket();
   const firstUpstreamMessage = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await firstUpstreamMessage;
 
   const completed = nextMessage(socket);
@@ -1157,9 +1330,11 @@ test("a later response.create reloads configuration and closes when WebSocket su
   const reconnectError = nextMessage(socket);
   const clientClosed = nextClose(socket);
   const upstreamClosed = nextUpstreamClose(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
 
-  expect(JSON.parse(await reconnectError as string)).toMatchObject({
+  expect(JSON.parse((await reconnectError) as string)).toMatchObject({
     type: "error",
     status: 503,
     error: { code: "websocket_reconnect_required" },
@@ -1174,30 +1349,39 @@ test("a later response.create reauthenticates the client against current configu
   const config = gatewayConfig();
   await putConfig(config);
   const upstream = upstreamPair();
-  vi.stubGlobal("fetch", vi.fn(async () => openUpstream(upstream)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => openUpstream(upstream)),
+  );
 
   const { socket } = await openGatewaySocket();
   const firstUpstreamMessage = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await firstUpstreamMessage;
 
   const completed = nextMessage(socket);
   await sendUpstream(upstream, JSON.stringify({ type: "response.completed" }));
   await completed;
 
-  config.api_keys = [{
-    id: "replacement-client",
-    api_key: "replacement-client",
-    services: ["primary"],
-  }];
+  config.api_keys = [
+    {
+      id: "replacement-client",
+      api_key: "replacement-client",
+      services: ["primary"],
+    },
+  ];
   await putConfig(config);
 
   const authenticationError = nextMessage(socket);
   const clientClosed = nextClose(socket);
   const upstreamClosed = nextUpstreamClose(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
 
-  expect(JSON.parse(await authenticationError as string)).toMatchObject({
+  expect(JSON.parse((await authenticationError) as string)).toMatchObject({
     type: "error",
     status: 401,
     error: { code: "invalid_api_key" },
@@ -1211,19 +1395,26 @@ test("a later response.create reauthenticates the client against current configu
 test("an invalid later response.create is rejected instead of bypassing model validation", async () => {
   await putConfig(gatewayConfig());
   const upstream = upstreamPair();
-  vi.stubGlobal("fetch", vi.fn(async () => openUpstream(upstream)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => openUpstream(upstream)),
+  );
 
   const { socket } = await openGatewaySocket();
   const firstUpstreamMessage = nextUpstreamMessage(upstream);
-  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
   await firstUpstreamMessage;
 
   const validationError = nextMessage(socket);
   const clientClosed = nextClose(socket);
   const upstreamClosed = nextUpstreamClose(upstream);
-  socket.send(JSON.stringify({ type: "response.create", input: "missing model" }));
+  socket.send(
+    JSON.stringify({ type: "response.create", input: "missing model" }),
+  );
 
-  expect(JSON.parse(await validationError as string)).toMatchObject({
+  expect(JSON.parse((await validationError) as string)).toMatchObject({
     type: "error",
     status: 400,
     error: { code: "invalid_websocket_response_create" },

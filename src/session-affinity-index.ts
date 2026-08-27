@@ -86,15 +86,22 @@ export class SessionAffinityIndex extends DurableObject<Env> {
   }
 
   get(sessionDigest: string): SessionAffinityIndexEntry | null {
-    if (typeof sessionDigest !== "string" || !DIGEST_PATTERN.test(sessionDigest)) {
+    if (
+      typeof sessionDigest !== "string" ||
+      !DIGEST_PATTERN.test(sessionDigest)
+    ) {
       return null;
     }
-    return this.ctx.storage.sql.exec<SessionAffinityIndexRow>(
-      `SELECT session_digest, session_id, binding_id, created_at, generation
+    return (
+      this.ctx.storage.sql
+        .exec<SessionAffinityIndexRow>(
+          `SELECT session_digest, session_id, binding_id, created_at, generation
        FROM sessions
        WHERE session_digest = ?`,
-      sessionDigest,
-    ).toArray()[0] ?? null;
+          sessionDigest,
+        )
+        .toArray()[0] ?? null
+    );
   }
 
   listPage(cursor: string | null, limit: number): SessionAffinityIndexPage {
@@ -107,23 +114,28 @@ export class SessionAffinityIndex extends DurableObject<Env> {
     ) {
       throw new TypeError("invalid session affinity page request");
     }
-    const rows = cursor === null
-      ? this.ctx.storage.sql.exec<SessionAffinityIndexRow>(
-        `SELECT session_digest, session_id, binding_id, created_at, generation
+    const rows =
+      cursor === null
+        ? this.ctx.storage.sql
+            .exec<SessionAffinityIndexRow>(
+              `SELECT session_digest, session_id, binding_id, created_at, generation
          FROM sessions
          ORDER BY session_digest
          LIMIT ?`,
-        limit + 1,
-      ).toArray()
-      : this.ctx.storage.sql.exec<SessionAffinityIndexRow>(
-        `SELECT session_digest, session_id, binding_id, created_at, generation
+              limit + 1,
+            )
+            .toArray()
+        : this.ctx.storage.sql
+            .exec<SessionAffinityIndexRow>(
+              `SELECT session_digest, session_id, binding_id, created_at, generation
          FROM sessions
          WHERE session_digest > ?
          ORDER BY session_digest
          LIMIT ?`,
-        cursor,
-        limit + 1,
-      ).toArray();
+              cursor,
+              limit + 1,
+            )
+            .toArray();
     const data = rows.slice(0, limit);
     let nextCursor: string | null = null;
     if (rows.length > limit) {

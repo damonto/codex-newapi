@@ -43,7 +43,8 @@ export async function handleResponsesWebSocket(
   headers.set(RESPONSES_WEBSOCKET_REQUEST_ID_HEADER, requestId);
   const proxyRequest = new Request(request, { headers });
   const proxyId = env.RESPONSES_WEBSOCKET.newUniqueId();
-  const response = await env.RESPONSES_WEBSOCKET.get(proxyId).fetch(proxyRequest);
+  const response =
+    await env.RESPONSES_WEBSOCKET.get(proxyId).fetch(proxyRequest);
   if (response.status === 101 && response.webSocket) {
     requestLog?.set({ outcome: "websocket_accepted" });
   } else {

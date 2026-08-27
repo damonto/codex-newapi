@@ -5,7 +5,9 @@ export class BodyTooLargeError extends Error {
   }
 }
 
-async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
+async function cancelBody(
+  body: ReadableStream<Uint8Array> | null,
+): Promise<void> {
   if (!body) {
     return;
   }
@@ -16,7 +18,9 @@ async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void
   }
 }
 
-function declaredLength(contentLength: string | null | undefined): bigint | undefined {
+function declaredLength(
+  contentLength: string | null | undefined,
+): bigint | undefined {
   const normalized = contentLength?.trim();
   if (!normalized || !/^\d+$/.test(normalized)) {
     return undefined;
@@ -43,9 +47,10 @@ export async function readBodyWithinLimit(
   }
 
   const reader = body.getReader();
-  const initialCapacity = expectedLength === undefined
-    ? Math.min(maxBytes, 64 * 1024)
-    : Number(expectedLength);
+  const initialCapacity =
+    expectedLength === undefined
+      ? Math.min(maxBytes, 64 * 1024)
+      : Number(expectedLength);
   let buffer = new Uint8Array(initialCapacity);
   let totalBytes = 0;
   try {
@@ -90,6 +95,8 @@ export async function readBodyWithinLimit(
   return buffer.subarray(0, totalBytes);
 }
 
-export async function discardBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
+export async function discardBody(
+  body: ReadableStream<Uint8Array> | null,
+): Promise<void> {
   await cancelBody(body);
 }

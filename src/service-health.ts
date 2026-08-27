@@ -1,9 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
-import {
-  ServiceHealthState,
-  type StoredServiceHealthState,
-} from "./health.ts";
+import { ServiceHealthState, type StoredServiceHealthState } from "./health.ts";
 import { configureLogging } from "./log.ts";
 import type { ServiceHealthSnapshot } from "./types.ts";
 
@@ -16,9 +13,11 @@ function storedStatesEqual(
   if (left === undefined || right === null) {
     return left === undefined && right === null;
   }
-  return left.failures === right.failures &&
+  return (
+    left.failures === right.failures &&
     left.failure_window_started_at === right.failure_window_started_at &&
-    left.cooling_until === right.cooling_until;
+    left.cooling_until === right.cooling_until
+  );
 }
 
 export class ServiceHealth extends DurableObject<Env> {
@@ -31,7 +30,8 @@ export class ServiceHealth extends DurableObject<Env> {
     health: ServiceHealthState;
     stored: StoredServiceHealthState | undefined;
   }> {
-    const stored = await this.ctx.storage.get<StoredServiceHealthState>(HEALTH_STORAGE_KEY);
+    const stored =
+      await this.ctx.storage.get<StoredServiceHealthState>(HEALTH_STORAGE_KEY);
     return {
       health: new ServiceHealthState(undefined, stored),
       stored,

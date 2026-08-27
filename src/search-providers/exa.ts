@@ -9,10 +9,18 @@ import type { WebSearchProvider } from "./types.ts";
 function resultSnippet(result: Record<string, unknown>): string {
   const highlights = Array.isArray(result.highlights)
     ? nonBlankString(
-      result.highlights.map((value) => nonBlankString(value)).filter(Boolean).join(" [...] "),
-    )
+        result.highlights
+          .map((value) => nonBlankString(value))
+          .filter(Boolean)
+          .join(" [...] "),
+      )
     : undefined;
-  return highlights ?? nonBlankString(result.summary) ?? nonBlankString(result.text) ?? "";
+  return (
+    highlights ??
+    nonBlankString(result.summary) ??
+    nonBlankString(result.text) ??
+    ""
+  );
 }
 
 export const exaProvider = {
@@ -40,7 +48,9 @@ export const exaProvider = {
           : { excludeDomains: input.excludeDomains }),
         ...(input.recency === undefined
           ? {}
-          : { startPublishedDate: `${dateBeforeDays(input.recency)}T00:00:00.000Z` }),
+          : {
+              startPublishedDate: `${dateBeforeDays(input.recency)}T00:00:00.000Z`,
+            }),
       }),
     });
   },

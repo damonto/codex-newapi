@@ -47,8 +47,9 @@ function decodeCursor(value: string | null): string | null | undefined {
     return value === null ? null : undefined;
   }
   try {
-    const padded = value.replace(/-/g, "+").replace(/_/g, "/") +
-      "=".repeat((4 - value.length % 4) % 4);
+    const padded =
+      value.replace(/-/g, "+").replace(/_/g, "/") +
+      "=".repeat((4 - (value.length % 4)) % 4);
     const decoded = atob(padded);
     const digest = decoded.startsWith("v1:") ? decoded.slice(3) : "";
     return /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
@@ -94,10 +95,7 @@ export function decodeSessionIdPath(value: string): string | undefined {
   }
 }
 
-function sessionIndex(
-  env: Env,
-  registryName: string,
-) {
+function sessionIndex(env: Env, registryName: string) {
   return env.SESSION_AFFINITY_INDEX.getByName(registryName);
 }
 
@@ -172,14 +170,22 @@ export async function handleSessionList(
         registryName,
         entry.session_digest,
       ).getStatus();
-      const view = status ? sessionView(entry, status, registryName) : undefined;
+      const view = status
+        ? sessionView(entry, status, registryName)
+        : undefined;
       if (!view) {
-        await index.remove(entry.session_digest, entry.binding_id, entry.generation);
+        await index.remove(
+          entry.session_digest,
+          entry.binding_id,
+          entry.generation,
+        );
       }
       return view;
     },
   );
-  const data = entries.filter((entry): entry is SessionBindingView => entry !== undefined);
+  const data = entries.filter(
+    (entry): entry is SessionBindingView => entry !== undefined,
+  );
   requestLog.set({
     sessions: {
       action: "list",
@@ -191,7 +197,8 @@ export async function handleSessionList(
   return sessionJsonResponse({
     object: "list",
     data,
-    next_cursor: page.next_cursor === null ? null : encodeCursor(page.next_cursor),
+    next_cursor:
+      page.next_cursor === null ? null : encodeCursor(page.next_cursor),
   });
 }
 
@@ -200,11 +207,7 @@ async function clearIndexedEntry(
   registryName: string,
   entry: SessionAffinityIndexEntry,
 ): Promise<boolean> {
-  const affinity = sessionAffinity(
-    env,
-    registryName,
-    entry.session_digest,
-  );
+  const affinity = sessionAffinity(env, registryName, entry.session_digest);
   const cleared = await affinity.clearIfBindingId(
     entry.binding_id,
     entry.generation,
@@ -275,10 +278,16 @@ export async function handleSessionClearOne(
   const entry = await index.get(identity.session_digest);
   let deleted = 0;
   if (entry && entry.session_id !== sessionId) {
-    await index.remove(identity.session_digest, entry.binding_id, entry.generation);
+    await index.remove(
+      identity.session_digest,
+      entry.binding_id,
+      entry.generation,
+    );
     deleted = Number(await clearManagedByIdentity(env, identity));
   } else if (entry) {
-    deleted = Number(await clearIndexedEntry(env, identity.registry_name, entry));
+    deleted = Number(
+      await clearIndexedEntry(env, identity.registry_name, entry),
+    );
   } else {
     deleted = Number(await clearManagedByIdentity(env, identity));
   }

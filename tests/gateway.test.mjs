@@ -361,6 +361,107 @@ test("Worker maps the model, replaces authorization, and preserves the upstream 
   }
 });
 
+test("Worker forwards Claude Code messages with the matching credential header", async () => {
+  clearConfigCacheForTests();
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    captured = {
+      url: request.url,
+      xApiKey: request.headers.get("x-api-key"),
+      authorization: request.headers.get("authorization"),
+      anthropicVersion: request.headers.get("anthropic-version"),
+      body: JSON.parse(await request.text()),
+    };
+    return new Response("event: message_start\n\n", {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/messages?beta=true", {
+        method: "POST",
+        headers: {
+          "x-api-key": "client-key",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "grok-4.5",
+          max_tokens: 1024,
+          messages: [{ role: "user", content: "hello" }],
+          stream: true,
+        }),
+      }),
+      testEnv(gatewayConfig()),
+      {},
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "text/event-stream");
+    assert.equal(await response.text(), "event: message_start\n\n");
+    assert.deepEqual(captured, {
+      url: "https://primary.example/v1/messages?beta=true",
+      xApiKey: "upstream-key",
+      authorization: null,
+      anthropicVersion: "2023-06-01",
+      body: {
+        model: "grok-4.5",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Worker returns Anthropic-shaped authentication errors to Claude clients", async () => {
+  clearConfigCacheForTests();
+  const response = await worker.fetch(
+    new Request("https://gateway.example/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": "wrong-key",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({ model: "grok-4.5", messages: [] }),
+    }),
+    testEnv(gatewayConfig()),
+    {},
+  );
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    type: "error",
+    error: { type: "authentication_error", message: "Invalid API key" },
+  });
+});
+
+test("Worker keeps the OpenAI invalid_api_key code for bearer clients", async () => {
+  clearConfigCacheForTests();
+  const response = await worker.fetch(
+    new Request("https://gateway.example/v1/responses", {
+      method: "POST",
+      headers: { authorization: "Bearer wrong-key" },
+      body: JSON.stringify({ model: "grok-4.5", input: "hello" }),
+    }),
+    testEnv(gatewayConfig()),
+    {},
+  );
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error: {
+      message: "Invalid API key",
+      type: "invalid_request_error",
+      param: null,
+      code: "invalid_api_key",
+    },
+  });
+});
+
 test("Worker forwards alpha search and responses compact aliases with response fidelity", async () => {
   clearConfigCacheForTests();
   const originalFetch = globalThis.fetch;

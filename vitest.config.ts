@@ -9,17 +9,18 @@ export default defineConfig({
         serviceBindings: {
           TEST_UPSTREAM: "test-upstream",
         },
-        workers: [{
-          name: "test-upstream",
-          compatibilityDate: "2026-07-24",
-          durableObjects: {
-            UPSTREAM_CONNECTION: {
-              className: "UpstreamConnection",
-              useSQLite: true,
+        workers: [
+          {
+            name: "test-upstream",
+            compatibilityDate: "2026-07-24",
+            durableObjects: {
+              UPSTREAM_CONNECTION: {
+                className: "UpstreamConnection",
+                useSQLite: true,
+              },
             },
-          },
-          modules: true,
-          script: `
+            modules: true,
+            script: `
             function json(value, status = 200) {
               return new Response(JSON.stringify(value), {
                 status,
@@ -124,7 +125,8 @@ export default defineConfig({
               },
             };
           `,
-        }],
+          },
+        ],
       },
     }),
   ],

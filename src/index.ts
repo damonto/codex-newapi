@@ -5,7 +5,13 @@ import {
   listCoolingHealth,
   type HealthScope,
 } from "./health.ts";
-import { bearerToken, findClientApiKey, jsonResponse, openAiError } from "./http.ts";
+import {
+  apiError,
+  bearerToken,
+  findClientApiKey,
+  jsonResponse,
+  openAiError,
+} from "./http.ts";
 import {
   errorMessage,
   configureLogging,
@@ -22,6 +28,7 @@ import {
   handleSessionList,
 } from "./session-bindings.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
+import { requestProtocol } from "./protocol.ts";
 import { handleResponsesWebSocket } from "./websocket.ts";
 
 type GatewayEndpoint = "models" | "health" | "sessions" | InferencePath;
@@ -76,6 +83,10 @@ function route(pathname: string): GatewayRoute | undefined {
     case "/alpha/search":
     case "/v1/alpha/search":
       return { endpoint: "alpha/search" };
+    case "/v1/messages":
+      return { endpoint: "messages" };
+    case "/v1/messages/count_tokens":
+      return { endpoint: "messages/count_tokens" };
     case "/chat/completions":
     case "/v1/chat/completions":
       return { endpoint: "chat/completions" };
@@ -105,7 +116,10 @@ function invalidHealthScope(): Response {
 }
 
 function expectedMethods(route: GatewayRoute): readonly string[] {
-  if (route.endpoint === "models" || (route.endpoint === "health" && route.action === "list")) {
+  if (
+    route.endpoint === "models" ||
+    (route.endpoint === "health" && route.action === "list")
+  ) {
     return ["GET"];
   }
   if (route.endpoint === "sessions") {
@@ -142,7 +156,7 @@ async function handleHealthList(
       cooling_keys: data.flatMap((entry) =>
         "key_id" in entry
           ? [{ service_id: entry.service_id, key_id: entry.key_id }]
-          : []
+          : [],
       ),
     },
   });
@@ -199,9 +213,10 @@ async function handleHealthClear(
     });
     return invalidHealthScope();
   }
-  const snapshot = keyId === undefined
-    ? await clearServiceHealth(env, serviceId, scope)
-    : await clearKeyHealth(env, serviceId, keyId, scope);
+  const snapshot =
+    keyId === undefined
+      ? await clearServiceHealth(env, serviceId, scope)
+      : await clearKeyHealth(env, serviceId, keyId, scope);
   requestLog.set({
     health: {
       action: "clear",
@@ -252,9 +267,11 @@ function isResponsesWebSocketRequest(
   request: Request,
   matchedRoute: GatewayRoute,
 ): boolean {
-  return matchedRoute.endpoint === "responses" &&
+  return (
+    matchedRoute.endpoint === "responses" &&
     request.method === "GET" &&
-    request.headers.get("upgrade")?.toLowerCase() === "websocket";
+    request.headers.get("upgrade")?.toLowerCase() === "websocket"
+  );
 }
 
 async function handleMatchedRoute(
@@ -270,25 +287,43 @@ async function handleMatchedRoute(
   requestLog: RequestLogContext,
 ): Promise<Response> {
   if (matchedRoute.endpoint === "models") {
-    return handleModels(request, env, config, client, requestId, context, requestLog);
+    return handleModels(
+      request,
+      env,
+      config,
+      client,
+      requestId,
+      context,
+      requestLog,
+    );
   }
   if (matchedRoute.endpoint === "health") {
     return matchedRoute.action === "list"
       ? handleHealthList(env, config, client, incomingUrl, requestLog)
       : handleHealthClear(
-        env,
-        config,
-        client,
-        incomingUrl,
-        matchedRoute.serviceId,
-        matchedRoute.keyId,
-        requestLog,
-      );
+          env,
+          config,
+          client,
+          incomingUrl,
+          matchedRoute.serviceId,
+          matchedRoute.keyId,
+          requestLog,
+        );
   }
   if (matchedRoute.endpoint === "sessions") {
-    return handleSessions(request, env, client, incomingUrl, matchedRoute, requestLog);
+    return handleSessions(
+      request,
+      env,
+      client,
+      incomingUrl,
+      matchedRoute,
+      requestLog,
+    );
   }
-  if (matchedRoute.endpoint === "alpha/search" && config.web_search.mode !== "proxy") {
+  if (
+    matchedRoute.endpoint === "alpha/search" &&
+    config.web_search.mode !== "proxy"
+  ) {
     return handleConfiguredWebSearch(request, config, client, requestLog);
   }
   if (websocketRequest) {
@@ -315,28 +350,50 @@ async function handleMatchedRoute(
 }
 
 export default {
-  async fetch(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    context: ExecutionContext,
+  ): Promise<Response> {
     configureLogging(env.LOG_LEVEL);
     const requestId = newRequestId();
     const incomingUrl = new URL(request.url);
     const matchedRoute = route(incomingUrl.pathname);
     const endpoint = matchedRoute?.endpoint;
-    const requestLog = new RequestLogContext(requestId, request, endpoint, context);
-    if (matchedRoute?.endpoint === "sessions" && matchedRoute.action === "clear") {
+    const protocol = requestProtocol(request);
+    const requestLog = new RequestLogContext(
+      requestId,
+      request,
+      endpoint,
+      context,
+    );
+    if (
+      matchedRoute?.endpoint === "sessions" &&
+      matchedRoute.action === "clear"
+    ) {
       const prefix = incomingUrl.pathname.startsWith("/v1/")
         ? "/v1/sessions"
         : "/sessions";
       requestLog.set({ path: `${prefix}/{session_id}` });
     }
-    const finish = (response: Response): Response => requestLog.complete(response);
-    const clientToken = bearerToken(request);
-    if (clientToken) {
-      requestLog.registerSensitiveValues([clientToken]);
-    }
+    const finish = (response: Response): Response =>
+      requestLog.complete(response);
+    requestLog.registerSensitiveValues([
+      bearerToken(request),
+      request.headers.get("x-api-key"),
+    ]);
 
     if (!endpoint) {
       requestLog.warn({ outcome: "route_not_found" });
-      return finish(openAiError(404, "Not found", "invalid_request_error", "not_found"));
+      return finish(
+        apiError(
+          protocol,
+          404,
+          "Not found",
+          "invalid_request_error",
+          "not_found",
+        ),
+      );
     }
     const websocketRequest = isResponsesWebSocketRequest(request, matchedRoute);
     const allowedMethods = expectedMethods(matchedRoute);
@@ -345,22 +402,30 @@ export default {
         outcome: "method_rejected",
         expected_methods: allowedMethods,
       });
-      return finish(openAiError(
-        405,
-        `Only ${allowedMethods.join(" or ")} is allowed for this endpoint`,
-      ));
+      return finish(
+        apiError(
+          protocol,
+          405,
+          `Only ${allowedMethods.join(" or ")} is allowed for this endpoint`,
+        ),
+      );
     }
 
     let config;
     try {
       config = await loadConfig(env, requestLog);
     } catch (error) {
-      const message = error instanceof ConfigError ? error.message : "configuration is unavailable";
+      const message =
+        error instanceof ConfigError
+          ? error.message
+          : "configuration is unavailable";
       requestLog.error({
         outcome: "configuration_error",
         error: errorMessage(error),
       });
-      return finish(openAiError(500, message, "server_error", "configuration_error"));
+      return finish(
+        apiError(protocol, 500, message, "server_error", "configuration_error"),
+      );
     }
 
     const client = await findClientApiKey(request, config.api_keys);
@@ -369,7 +434,15 @@ export default {
         outcome: "authentication_rejected",
         authentication: "rejected",
       });
-      return finish(openAiError(401, "Invalid API key", "invalid_request_error", "invalid_api_key"));
+      return finish(
+        apiError(
+          protocol,
+          401,
+          "Invalid API key",
+          "invalid_request_error",
+          "invalid_api_key",
+        ),
+      );
     }
 
     requestLog.registerSensitiveValues([client.api_key]);
@@ -399,7 +472,15 @@ export default {
         outcome: "gateway_error",
         error: errorMessage(error),
       });
-      return finish(openAiError(500, "The gateway failed to process the request", "server_error", "gateway_error"));
+      return finish(
+        apiError(
+          protocol,
+          500,
+          "The gateway failed to process the request",
+          "server_error",
+          "gateway_error",
+        ),
+      );
     }
   },
 } satisfies ExportedHandler<Env>;

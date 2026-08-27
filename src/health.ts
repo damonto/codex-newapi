@@ -3,6 +3,7 @@ import {
   SERVICE_FAN_OUT_CONCURRENCY,
 } from "./concurrency.ts";
 import { errorMessage, logWarn } from "./log.ts";
+import { isAnthropicProtocol, type ApiProtocol } from "./protocol.ts";
 import type { ServiceConfig, ServiceHealthSnapshot } from "./types.ts";
 
 export const FAILURE_THRESHOLD = 10;
@@ -15,6 +16,32 @@ export function isHealthFailureStatus(status: number): boolean {
 
 export function isKeyHealthFailureStatus(status: number): boolean {
   return status === 402 || status === 403;
+}
+
+export function isProtocolHealthFailureStatus(
+  status: number,
+  protocol: ApiProtocol,
+): boolean {
+  return isAnthropicProtocol(protocol)
+    ? isAnthropicHealthFailureStatus(status)
+    : isHealthFailureStatus(status);
+}
+
+export function isProtocolKeyHealthFailureStatus(
+  status: number,
+  protocol: ApiProtocol,
+): boolean {
+  return isAnthropicProtocol(protocol)
+    ? isAnthropicKeyHealthFailureStatus(status)
+    : isKeyHealthFailureStatus(status);
+}
+
+export function isAnthropicHealthFailureStatus(status: number): boolean {
+  return status === 529;
+}
+
+export function isAnthropicKeyHealthFailureStatus(status: number): boolean {
+  return status === 401;
 }
 
 export type HealthScope = "inference" | "catalog";
@@ -41,9 +68,7 @@ export interface CoolingKeyHealth extends ServiceHealthSnapshot {
 export type CoolingHealth = CoolingServiceHealth | CoolingKeyHealth;
 
 export type ServiceAvailabilityReason =
-  | "available"
-  | "cooling"
-  | "health_read_failed";
+  "available" | "cooling" | "health_read_failed";
 
 export interface ServiceAvailability {
   available: boolean;
@@ -98,7 +123,11 @@ export class ServiceHealthState {
   }
 
   getStoredState(): StoredServiceHealthState | null {
-    if (this.failures === 0 && this.failureWindowStartedAt === null && this.coolingUntil === null) {
+    if (
+      this.failures === 0 &&
+      this.failureWindowStartedAt === null &&
+      this.coolingUntil === null
+    ) {
       return null;
     }
     return {
@@ -188,7 +217,8 @@ export async function getServiceAvailability(
 ): Promise<ServiceAvailability> {
   try {
     const snapshot = await healthStub(env, serviceId, scope).getStatus();
-    const available = snapshot.cooling_until === null || snapshot.cooling_until <= Date.now();
+    const available =
+      snapshot.cooling_until === null || snapshot.cooling_until <= Date.now();
     return {
       available,
       reason: available ? "available" : "cooling",
@@ -219,8 +249,14 @@ export async function getKeyAvailability(
   scope: HealthScope = "inference",
 ): Promise<ServiceAvailability> {
   try {
-    const snapshot = await keyHealthStub(env, serviceId, keyId, scope).getStatus();
-    const available = snapshot.cooling_until === null || snapshot.cooling_until <= Date.now();
+    const snapshot = await keyHealthStub(
+      env,
+      serviceId,
+      keyId,
+      scope,
+    ).getStatus();
+    const available =
+      snapshot.cooling_until === null || snapshot.cooling_until <= Date.now();
     return {
       available,
       reason: available ? "available" : "cooling",
@@ -254,9 +290,10 @@ async function record(
 ): Promise<void> {
   try {
     const stub = healthStub(env, serviceId, scope);
-    const snapshot = outcome === "success"
-      ? await stub.recordSuccess()
-      : await stub.recordFailure();
+    const snapshot =
+      outcome === "success"
+        ? await stub.recordSuccess()
+        : await stub.recordFailure();
     if (outcome === "failure" && snapshot.cooling_until !== null) {
       logWarn("health.cooldown.active", {
         request_id: requestId,
@@ -356,7 +393,7 @@ export async function listCoolingServices(
     SERVICE_FAN_OUT_CONCURRENCY,
     async (serviceId) => ({
       service_id: serviceId,
-      ...await healthStub(env, serviceId, scope).getStatus(),
+      ...(await healthStub(env, serviceId, scope).getStatus()),
     }),
   );
   const now = Date.now();
@@ -382,21 +419,22 @@ export async function listCoolingHealth(
     descriptors,
     SERVICE_FAN_OUT_CONCURRENCY,
     async (descriptor): Promise<CoolingHealth> => {
-      const snapshot = descriptor.kind === "service"
-        ? await healthStub(env, descriptor.service_id, scope).getStatus()
-        : await keyHealthStub(
-          env,
-          descriptor.service_id,
-          descriptor.key_id,
-          scope,
-        ).getStatus();
+      const snapshot =
+        descriptor.kind === "service"
+          ? await healthStub(env, descriptor.service_id, scope).getStatus()
+          : await keyHealthStub(
+              env,
+              descriptor.service_id,
+              descriptor.key_id,
+              scope,
+            ).getStatus();
       return descriptor.kind === "service"
         ? { service_id: descriptor.service_id, ...snapshot }
         : {
-          service_id: descriptor.service_id,
-          key_id: descriptor.key_id,
-          ...snapshot,
-        };
+            service_id: descriptor.service_id,
+            key_id: descriptor.key_id,
+            ...snapshot,
+          };
     },
   );
   const now = Date.now();

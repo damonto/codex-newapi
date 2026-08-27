@@ -161,10 +161,7 @@ test("mergeModelCatalogs rejects invalid JSON and empty model lists", async () =
       /invalid\.json is not valid JSON/,
     );
 
-    await writeFile(
-      join(modelsDirectory, "invalid.json"),
-      '{"models":[]}',
-    );
+    await writeFile(join(modelsDirectory, "invalid.json"), '{"models":[]}');
     await assert.rejects(
       mergeModelCatalogs({ modelsDirectory, targetPath }),
       /must contain a non-empty models array/,

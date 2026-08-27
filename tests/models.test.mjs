@@ -9,6 +9,7 @@ import {
   handleModels,
   MAX_MODEL_CATALOG_BODY_BYTES,
   MODEL_CATALOG_CONCURRENCY,
+  modelsFormatFor,
 } from "../src/models.ts";
 
 const results = [
@@ -70,6 +71,58 @@ test("Codex aggregation only returns exact catalog matches", () => {
     models.map((model) => model.slug),
     ["gpt-5.6-sol", "codex-auto-review"],
   );
+});
+
+test("Anthropic clients receive the Anthropic model-list shape", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  const client = config.api_keys[0];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ data: [{ id: "model", object: "model" }] });
+  const { env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          "x-api-key": "client",
+          "anthropic-version": "2023-06-01",
+          "user-agent": "claude-cli/1.0.0",
+        },
+      }),
+      env,
+      config,
+      client,
+      "test",
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.has_more, false);
+    assert.equal(body.first_id, "model");
+    assert.equal(body.last_id, "model");
+    assert.deepEqual(
+      body.data.map((entry) => entry.id),
+      ["model"],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("model format selection prefers the Anthropic protocol over user agents", () => {
+  const anthropic = new Request("https://gateway.example/v1/models", {
+    headers: { "anthropic-version": "2023-06-01", "user-agent": "codex/1.0" },
+  });
+  assert.equal(modelsFormatFor(anthropic), "anthropic");
+  const codex = new Request("https://gateway.example/v1/models", {
+    headers: { "user-agent": "codex/1.0" },
+  });
+  assert.equal(modelsFormatFor(codex), "codex");
+  const openai = new Request("https://gateway.example/v1/models", {
+    headers: { "user-agent": "OpenAI-SDK" },
+  });
+  assert.equal(modelsFormatFor(openai), "openai");
 });
 
 test("model cache key hashing failures propagate", async (t) => {

@@ -72,8 +72,7 @@ export interface ServiceSelectionOptions {
 }
 
 export type RequiredServiceCapability =
-  | "supports_websocket"
-  | "supports_web_search";
+  "supports_websocket" | "supports_web_search";
 
 export interface ResolveModelRouteOptions {
   requiredCapability?: RequiredServiceCapability;
@@ -97,7 +96,7 @@ export function modelRoutesForClient(
 ): Record<string, ModelRouteConfig> {
   return {
     ...config.model_routes,
-    ...(client.model_routes ?? {}),
+    ...client.model_routes,
   };
 }
 
@@ -121,7 +120,10 @@ export function serviceSupportsModel(
   return service.models.includes(upstreamModel);
 }
 
-function routeAllowsService(route: ModelRouteConfig | undefined, serviceId: string): boolean {
+function routeAllowsService(
+  route: ModelRouteConfig | undefined,
+  serviceId: string,
+): boolean {
   return route?.services === undefined || route.services.includes(serviceId);
 }
 
@@ -134,11 +136,15 @@ function sortRoutedServices(
   targets: RoutedService[],
   config: GatewayConfig,
 ): RoutedService[] {
-  const order = new Map(config.services.map((service, index) => [service.id, index]));
+  const order = new Map(
+    config.services.map((service, index) => [service.id, index]),
+  );
   const serviceOrder = (serviceId: string): number => {
     const index = order.get(serviceId);
     if (index === undefined) {
-      throw new Error(`routed service ${serviceId} is missing from configuration`);
+      throw new Error(
+        `routed service ${serviceId} is missing from configuration`,
+      );
     }
     return index;
   };
@@ -209,7 +215,7 @@ async function evaluateAvailability(
     SERVICE_FAN_OUT_CONCURRENCY,
     async ({ service }): Promise<ServiceSelectionCheck> => ({
       service_id: service.id,
-      ...await getServiceAvailability(env, service.id, scope),
+      ...(await getServiceAvailability(env, service.id, scope)),
     }),
   );
   const availableServiceIds = new Set(
@@ -218,7 +224,7 @@ async function evaluateAvailability(
   const keyDescriptors = routedServices.flatMap(({ service, keys }) =>
     availableServiceIds.has(service.id)
       ? keys.map((key) => ({ service, key }))
-      : []
+      : [],
   );
   const keyChecks = await mapWithConcurrency(
     keyDescriptors,
@@ -226,7 +232,7 @@ async function evaluateAvailability(
     async ({ service, key }): Promise<KeySelectionCheck> => ({
       service_id: service.id,
       key_id: key.id,
-      ...await getKeyAvailability(env, service.id, key.id, scope),
+      ...(await getKeyAvailability(env, service.id, key.id, scope)),
     }),
   );
   const availableKeyIds = new Set(
@@ -239,7 +245,7 @@ async function evaluateAvailability(
       return [];
     }
     const availableKeys = keys.filter((key) =>
-      availableKeyIds.has(`${service.id}\u0000${key.id}`)
+      availableKeyIds.has(`${service.id}\u0000${key.id}`),
     );
     return availableKeys.length > 0 ? [{ service, keys: availableKeys }] : [];
   });
@@ -273,7 +279,10 @@ function selectRandomTarget(
   candidates: RoutedService[],
   random?: AffinityRandomSource,
 ): ServiceTarget | undefined {
-  const selected = chooseAffinityCandidate(affinityCandidates(candidates), random);
+  const selected = chooseAffinityCandidate(
+    affinityCandidates(candidates),
+    random,
+  );
   return selected
     ? targetByIds(candidates, selected.service_id, selected.key_id)
     : undefined;
@@ -298,20 +307,15 @@ export async function selectAvailableServiceWithDetails(
 
   if (options.session) {
     const candidates = affinityCandidates(availability.candidates);
-    const preferred = chooseAffinityCandidate(
-      candidates,
-      options.random,
-    );
+    const preferred = chooseAffinityCandidate(candidates, options.random);
     try {
       const identity = await sessionAffinityIdentity(
         options.session.clientApiKey,
         options.session.sessionId,
       );
-      const resolution = await env.SESSION_AFFINITY.getByName(identity.object_name).resolve(
-        candidates,
-        preferred,
-        identity,
-      );
+      const resolution = await env.SESSION_AFFINITY.getByName(
+        identity.object_name,
+      ).resolve(candidates, preferred, identity);
       if (!resolution) {
         throw new Error("session affinity returned no candidate");
       }
@@ -333,10 +337,10 @@ export async function selectAvailableServiceWithDetails(
       return {
         target: preferred
           ? targetByIds(
-            availability.candidates,
-            preferred.service_id,
-            preferred.key_id,
-          )
+              availability.candidates,
+              preferred.service_id,
+              preferred.key_id,
+            )
           : undefined,
         checks: availability.checks,
         keyChecks: availability.keyChecks,
@@ -346,10 +350,7 @@ export async function selectAvailableServiceWithDetails(
   }
 
   return {
-    target: selectRandomTarget(
-      availability.candidates,
-      options.random,
-    ),
+    target: selectRandomTarget(availability.candidates, options.random),
     checks: availability.checks,
     keyChecks: availability.keyChecks,
   };
@@ -367,7 +368,11 @@ export async function selectAvailableCatalogTargetsWithDetails(
   routedServices: RoutedService[],
   random?: AffinityRandomSource,
 ): Promise<CatalogSelection> {
-  const availability = await evaluateAvailability(env, routedServices, "catalog");
+  const availability = await evaluateAvailability(
+    env,
+    routedServices,
+    "catalog",
+  );
   const targets = availability.candidates.flatMap(({ service, keys }) => {
     const key = selectServiceApiKey({ ...service, keys }, random);
     return key ? [{ service, key }] : [];
@@ -385,7 +390,9 @@ export async function targetIsAvailableForRoute(
   target: ServiceTarget,
   scope: HealthScope = "inference",
 ): Promise<boolean> {
-  const routed = route.targets.find(({ service }) => service.id === target.service.id);
+  const routed = route.targets.find(
+    ({ service }) => service.id === target.service.id,
+  );
   if (!routed?.keys.some((key) => key.id === target.key.id)) {
     return false;
   }

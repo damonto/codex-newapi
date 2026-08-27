@@ -5,6 +5,7 @@ import {
   findClientApiKey,
   forwardRequestHeaders,
   forwardWebSocketHeaders,
+  requestCredentialTokens,
 } from "../src/http.ts";
 import { ServiceHealthState } from "../src/health.ts";
 import {
@@ -80,10 +81,12 @@ function inferenceFixture(retry) {
         getByName: (name) => ({
           resolve: async (candidates, preferred) => {
             const stored = affinities.get(name);
-            const isCandidate = (selection) => selection !== undefined &&
-              candidates.some((candidate) =>
-                candidate.service_id === selection.service_id &&
-                candidate.keys.some((key) => key.key_id === selection.key_id)
+            const isCandidate = (selection) =>
+              selection !== undefined &&
+              candidates.some(
+                (candidate) =>
+                  candidate.service_id === selection.service_id &&
+                  candidate.keys.some((key) => key.key_id === selection.key_id),
               );
             if (isCandidate(stored)) {
               return { ...stored, updated_at: Date.now(), status: "hit" };
@@ -112,13 +115,22 @@ function inferenceRequest() {
 
 test("request JSON stays byte-for-byte equivalent when no mapping is needed", () => {
   const original = '{\n  "model": "grok-4.5",\n  "stream": true\n}';
-  assert.equal(rewriteModel(original, JSON.parse(original), "grok-4.5"), original);
+  assert.equal(
+    rewriteModel(original, JSON.parse(original), "grok-4.5"),
+    original,
+  );
 });
 
 test("mapping changes only the model value semantically", () => {
   const original = '{"model":"gpt-5.6-sol","stream":true,"input":"hello"}';
-  const rewritten = JSON.parse(rewriteModel(original, JSON.parse(original), "grok-4.5"));
-  assert.deepEqual(rewritten, { model: "grok-4.5", stream: true, input: "hello" });
+  const rewritten = JSON.parse(
+    rewriteModel(original, JSON.parse(original), "grok-4.5"),
+  );
+  assert.deepEqual(rewritten, {
+    model: "grok-4.5",
+    stream: true,
+    input: "hello",
+  });
 });
 
 test("session identifiers use header, metadata, then search id precedence", () => {
@@ -128,7 +140,11 @@ test("session identifiers use header, metadata, then search id precedence", () =
   assert.equal(
     sessionIdForInference(
       headerRequest,
-      { model: "model", client_metadata: { session_id: "metadata" }, id: "search" },
+      {
+        model: "model",
+        client_metadata: { session_id: "metadata" },
+        id: "search",
+      },
       "responses",
     ),
     "header-session",
@@ -168,8 +184,11 @@ test("session identifiers use header, metadata, then search id precedence", () =
 test("Responses bodies remain unchanged when image generation is routable", async () => {
   const fixture = inferenceFixture();
   fixture.config.services[0].models.push("upstream-image-model");
-  fixture.config.model_routes["gpt-image-2"] = { model: "upstream-image-model" };
-  const originalBody = '{\n  "model": "model",\n  "input": "draw",\n  "tools": []\n}\n';
+  fixture.config.model_routes["gpt-image-2"] = {
+    model: "upstream-image-model",
+  };
+  const originalBody =
+    '{\n  "model": "model",\n  "input": "draw",\n  "tools": []\n}\n';
   const originalFetch = globalThis.fetch;
   let captured;
   globalThis.fetch = async (input, init) => {
@@ -247,7 +266,9 @@ test("Image API requests route gpt-image-2 through its model route", async () =>
   const originalFetch = globalThis.fetch;
   const fixture = inferenceFixture();
   fixture.config.services[0].models = ["upstream-image-model"];
-  fixture.config.model_routes = { "gpt-image-2": { model: "upstream-image-model" } };
+  fixture.config.model_routes = {
+    "gpt-image-2": { model: "upstream-image-model" },
+  };
   let capturedBody;
   globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -364,6 +385,35 @@ test("forwarding removes proxy metadata and client credentials", () => {
   assert.equal(headers.get("content-type"), "application/json");
 });
 
+test("Anthropic forwarding preserves x-api-key and authorization positions", () => {
+  const request = new Request("https://gateway.example/v1/messages", {
+    headers: {
+      "x-api-key": "client",
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "messages-2025-04-14",
+      "x-tenant": "tenant-a",
+    },
+  });
+  const headers = forwardRequestHeaders(request, "upstream");
+  assert.equal(headers.get("x-api-key"), "upstream");
+  assert.equal(headers.get("authorization"), null);
+  assert.equal(headers.get("anthropic-version"), "2023-06-01");
+  assert.equal(headers.get("anthropic-beta"), "messages-2025-04-14");
+  assert.equal(headers.get("x-tenant"), "tenant-a");
+});
+
+test("Anthropic bearer forwarding replaces only the bearer position", () => {
+  const request = new Request("https://gateway.example/v1/messages", {
+    headers: {
+      authorization: "Bearer client-oauth",
+      "anthropic-version": "2023-06-01",
+    },
+  });
+  const headers = forwardRequestHeaders(request, "upstream-oauth");
+  assert.equal(headers.get("authorization"), "Bearer upstream-oauth");
+  assert.equal(headers.get("x-api-key"), null);
+});
+
 test("WebSocket forwarding strips Codex credentials and attestation", () => {
   const request = new Request("https://gateway.example/v1/responses", {
     headers: {
@@ -408,6 +458,31 @@ test("client API keys are selected through the asynchronous secret comparison", 
 
   assert.equal(match, entries[1]);
   assert.equal(missing, undefined);
+});
+
+test("client API keys are selected from x-api-key as well as bearer tokens", async () => {
+  const entries = [
+    { id: "first-client", api_key: "first-key", services: ["first"] },
+    { id: "claude-client", api_key: "claude-key", services: ["second"] },
+  ];
+  const match = await findClientApiKey(
+    new Request("https://gateway.example/v1/messages", {
+      headers: { "x-api-key": "claude-key" },
+    }),
+    entries,
+  );
+  assert.equal(match, entries[1]);
+  assert.deepEqual(
+    requestCredentialTokens(
+      new Request("https://gateway.example/v1/messages", {
+        headers: {
+          authorization: "Bearer bearer-token",
+          "x-api-key": "api-key-token",
+        },
+      }),
+    ),
+    ["bearer-token", "api-key-token"],
+  );
 });
 
 test("inference HTTP health only records 400 and 503 responses", async () => {
@@ -458,6 +533,41 @@ test("inference immediately cools the selected key on HTTP 402 or 403", async ()
       assert.equal(response.status, status);
       assert.equal(fixture.calls.keyFailure, 1);
       assert.equal(fixture.calls.failure, 0);
+      assert.equal(fixture.calls.success, 0);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Anthropic inference cools the key on 401 and records service failure on 529", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const [status, expectedKeyFailures, expectedFailures] of [
+      [401, 1, 0],
+      [529, 0, 1],
+    ]) {
+      const fixture = inferenceFixture();
+      globalThis.fetch = async () => new Response(null, { status });
+      const response = await handleInference(
+        new Request("https://gateway.example/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": "client",
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({ model: "model", messages: [] }),
+        }),
+        fixture.env,
+        fixture.config,
+        fixture.client,
+        "messages",
+        `anthropic-health-${status}`,
+      );
+      assert.equal(response.status, status);
+      assert.equal(fixture.calls.keyFailure, expectedKeyFailures);
+      assert.equal(fixture.calls.failure, expectedFailures);
       assert.equal(fixture.calls.success, 0);
     }
   } finally {
@@ -560,9 +670,9 @@ test("inference retries configured HTTP statuses with the same request", async (
     return attempts < 4
       ? new Response(`rate limited ${attempts}`, { status: 429 })
       : new Response("event: response.completed\n\n", {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
   };
 
   try {
@@ -581,9 +691,17 @@ test("inference retries configured HTTP statuses with the same request", async (
     assert.equal(await response.text(), "event: response.completed\n\n");
     assert.deepEqual(waits, retry.delays_ms);
     assert.equal(requests.length, 4);
-    assert(requests.every((request) => request.url === "https://primary.example/v1/responses"));
+    assert(
+      requests.every(
+        (request) => request.url === "https://primary.example/v1/responses",
+      ),
+    );
     assert(requests.every((request) => request.method === "POST"));
-    assert(requests.every((request) => request.authorization === "Bearer service-secret-key"));
+    assert(
+      requests.every(
+        (request) => request.authorization === "Bearer service-secret-key",
+      ),
+    );
     const expectedBody = JSON.stringify({ model: "model", input: "hello" });
     assert(requests.every((request) => request.body === expectedBody));
     assert.equal(fixture.calls.failure, 0);

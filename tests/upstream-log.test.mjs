@@ -7,7 +7,9 @@ import {
 } from "../src/upstream-log.ts";
 
 test("oversized upstream JSON is omitted without consuming the original response", async () => {
-  const body = JSON.stringify({ error: "x".repeat(MAX_LOGGED_UPSTREAM_ERROR_BYTES) });
+  const body = JSON.stringify({
+    error: "x".repeat(MAX_LOGGED_UPSTREAM_ERROR_BYTES),
+  });
   const response = new Response(body, {
     status: 500,
     headers: {

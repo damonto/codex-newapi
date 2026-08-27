@@ -17,7 +17,9 @@ export type ClientFrame =
   | { kind: "response_create"; frame: ResponseCreateFrame };
 
 export function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+  return typeof value === "string" && value.trim() !== ""
+    ? value.trim()
+    : undefined;
 }
 
 export function nonBlankString(value: unknown): string | undefined {
@@ -28,7 +30,7 @@ export function parseObject(text: string): JsonObject | undefined {
   try {
     const value = JSON.parse(text) as unknown;
     return typeof value === "object" && value !== null && !Array.isArray(value)
-      ? value as JsonObject
+      ? (value as JsonObject)
       : undefined;
   } catch {
     return undefined;
@@ -45,11 +47,12 @@ export function clientFrame(text: string): ClientFrame {
     return { kind: "invalid_response_create" };
   }
   const metadata = payload.client_metadata;
-  const sessionId = typeof metadata === "object" &&
-      metadata !== null &&
-      !Array.isArray(metadata)
-    ? nonBlankString((metadata as JsonObject).session_id)
-    : undefined;
+  const sessionId =
+    typeof metadata === "object" &&
+    metadata !== null &&
+    !Array.isArray(metadata)
+      ? nonBlankString((metadata as JsonObject).session_id)
+      : undefined;
   return {
     kind: "response_create",
     frame: { payload, model, sessionId },
@@ -85,7 +88,11 @@ export function messageBytes(value: unknown): number {
 export async function normalizeMessage(
   value: unknown,
 ): Promise<WebSocketMessage | undefined> {
-  if (typeof value === "string" || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+  if (
+    typeof value === "string" ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value)
+  ) {
     return value;
   }
   if (typeof Blob !== "undefined" && value instanceof Blob) {
@@ -111,11 +118,11 @@ export function safeSend(
 
 function normalizedCloseCode(code: number): number {
   return code >= 1000 &&
-      code <= 4999 &&
-      code !== 1004 &&
-      code !== 1005 &&
-      code !== 1006 &&
-      code !== 1015
+    code <= 4999 &&
+    code !== 1004 &&
+    code !== 1005 &&
+    code !== 1006 &&
+    code !== 1015
     ? code
     : 1011;
 }
@@ -141,7 +148,11 @@ export function truncateUtf8(value: string, maxBytes: number): string {
   return result;
 }
 
-export function closeSocket(socket: WebSocket | undefined, code: number, reason: string): void {
+export function closeSocket(
+  socket: WebSocket | undefined,
+  code: number,
+  reason: string,
+): void {
   if (!socket || socket.readyState === WebSocket.CLOSED) {
     return;
   }
@@ -169,14 +180,16 @@ export function errorStatus(value: JsonObject): number | undefined {
     }
     return undefined;
   };
-  const direct = numericStatus(value.status) ?? numericStatus(value.status_code);
+  const direct =
+    numericStatus(value.status) ?? numericStatus(value.status_code);
   if (direct !== undefined) {
     return direct;
   }
   const nested = value.error;
   if (typeof nested === "object" && nested !== null && !Array.isArray(nested)) {
     const error = nested as JsonObject;
-    const status = numericStatus(error.status) ??
+    const status =
+      numericStatus(error.status) ??
       numericStatus(error.status_code) ??
       numericStatus(error.http_status);
     if (status !== undefined) {
@@ -184,9 +197,14 @@ export function errorStatus(value: JsonObject): number | undefined {
     }
   }
   const response = value.response;
-  if (typeof response === "object" && response !== null && !Array.isArray(response)) {
+  if (
+    typeof response === "object" &&
+    response !== null &&
+    !Array.isArray(response)
+  ) {
     const responseObject = response as JsonObject;
-    const status = numericStatus(responseObject.status_code) ??
+    const status =
+      numericStatus(responseObject.status_code) ??
       numericStatus(responseObject.http_status);
     if (status !== undefined) {
       return status;
@@ -198,15 +216,19 @@ export function errorStatus(value: JsonObject): number | undefined {
       !Array.isArray(responseError)
     ) {
       const error = responseError as JsonObject;
-      return numericStatus(error.status) ??
+      return (
+        numericStatus(error.status) ??
         numericStatus(error.status_code) ??
-        numericStatus(error.http_status);
+        numericStatus(error.http_status)
+      );
     }
   }
   return undefined;
 }
 
-export async function upstreamErrorText(response: Response): Promise<string | undefined> {
+export async function upstreamErrorText(
+  response: Response,
+): Promise<string | undefined> {
   if (!response.body) {
     return undefined;
   }
@@ -226,7 +248,11 @@ export async function upstreamErrorText(response: Response): Promise<string | un
   }
 }
 
-export function gatewayErrorEvent(status: number, message: string, code: string): string {
+export function gatewayErrorEvent(
+  status: number,
+  message: string,
+  code: string,
+): string {
   return JSON.stringify({
     type: "error",
     status,

@@ -14,14 +14,17 @@ const LOG_LEVEL_ORDER: Record<EmittedLogLevel, number> = {
   error: 3,
 };
 const REDACTED = "[REDACTED]";
-const SENSITIVE_FIELD = /(?:^|[_-])(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|x-api-key|x-auth-token|x-access-token|x-client-key|token|access[-_]?token|refresh[-_]?token|secret|password|credential|credentials)(?:$|[_-])/i;
+const SENSITIVE_FIELD =
+  /(?:^|[_-])(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|x-api-key|x-auth-token|x-access-token|x-client-key|token|access[-_]?token|refresh[-_]?token|secret|password|credential|credentials)(?:$|[_-])/i;
 
 // Redaction patterns are applied in order of specificity: structured context
 // (JSON key-value, URL query, auth header) first, then bare key patterns as
 // a catch-all. The patterns intentionally overlap for defense-in-depth.
 const BEARER_PATTERN = /\b(Bearer|Basic)\s+[^\s,;]+/gi;
-const QUERY_SECRET_PATTERN = /([?&](?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization)\s*=)[^&#\s]+/gi;
-const ASSIGNMENT_SECRET_PATTERN = /((?:["']?(?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization|credential)s?["']?)\s*[:=]\s*["']?)[^"'\s,}&]+/gi;
+const QUERY_SECRET_PATTERN =
+  /([?&](?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization)\s*=)[^&#\s]+/gi;
+const ASSIGNMENT_SECRET_PATTERN =
+  /((?:["']?(?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization|credential)s?["']?)\s*[:=]\s*["']?)[^"'\s,}&]+/gi;
 // Catch-all for bare OpenAI-format keys not already redacted by the patterns above.
 const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9._-]{7,}\b/g;
 
@@ -29,12 +32,17 @@ const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9._-]{7,}\b/g;
 let currentLogLevel: LogLevel = "info";
 
 export function configureLogging(value: unknown): LogLevel {
-  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  currentLogLevel = normalized === "none" || normalized === "silent"
-    ? "off"
-    : normalized === "info" || normalized === "warn" || normalized === "error" || normalized === "off"
-      ? normalized
-      : "info";
+  const normalized =
+    typeof value === "string" ? value.trim().toLowerCase() : "";
+  currentLogLevel =
+    normalized === "none" || normalized === "silent"
+      ? "off"
+      : normalized === "info" ||
+          normalized === "warn" ||
+          normalized === "error" ||
+          normalized === "off"
+        ? normalized
+        : "info";
   return currentLogLevel;
 }
 
@@ -44,7 +52,10 @@ export function getLogLevel(): LogLevel {
 
 function normalizedSensitiveValues(values: Iterable<unknown>): string[] {
   return [...values]
-    .filter((value): value is string => typeof value === "string" && value.length >= 3)
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.length >= 3,
+    )
     .map((value) => value.slice(0, 4096));
 }
 
@@ -88,20 +99,28 @@ function sanitizeValue(
   seen.add(value);
   if (Array.isArray(value)) {
     const sanitized = value.map((entry) =>
-      sanitizeValue(entry, undefined, seen, sensitiveValues)
+      sanitizeValue(entry, undefined, seen, sensitiveValues),
     );
     seen.delete(value);
     return sanitized;
   }
   const sanitized: Record<string, unknown> = {};
   for (const [entryKey, entryValue] of Object.entries(value)) {
-    sanitized[entryKey] = sanitizeValue(entryValue, entryKey, seen, sensitiveValues);
+    sanitized[entryKey] = sanitizeValue(
+      entryValue,
+      entryKey,
+      seen,
+      sensitiveValues,
+    );
   }
   seen.delete(value);
   return sanitized;
 }
 
-function sanitizeFields(fields: LogFields, sensitiveValues: readonly string[]): LogFields {
+function sanitizeFields(
+  fields: LogFields,
+  sensitiveValues: readonly string[],
+): LogFields {
   return sanitizeValue(
     fields,
     undefined,
@@ -206,10 +225,12 @@ export class RequestLogContext {
   }
 
   registerSensitiveValues(values: Iterable<unknown>): void {
-    this.sensitiveValues = [...new Set([
-      ...this.sensitiveValues,
-      ...normalizedSensitiveValues(values),
-    ])].sort((left, right) => right.length - left.length);
+    this.sensitiveValues = [
+      ...new Set([
+        ...this.sensitiveValues,
+        ...normalizedSensitiveValues(values),
+      ]),
+    ].sort((left, right) => right.length - left.length);
   }
 
   mergeSection(section: string, fields: LogFields): void {
@@ -292,7 +313,7 @@ export class RequestLogContext {
 
     const completion = Promise.allSettled(this.deferred).then((results) => {
       const errors = results.flatMap((result) =>
-        result.status === "rejected" ? [errorMessage(result.reason)] : []
+        result.status === "rejected" ? [errorMessage(result.reason)] : [],
       );
       if (errors.length > 0) {
         this.mergeSection("logging", { deferred_errors: errors });

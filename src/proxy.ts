@@ -1,22 +1,15 @@
 import {
-  isKeyHealthFailureStatus,
+  isProtocolHealthFailureStatus,
+  isProtocolKeyHealthFailureStatus,
   recordKeyFailure,
   recordServiceFailure,
   recordServiceSuccess,
-  isHealthFailureStatus,
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "./health.ts";
-import {
-  forwardRequestHeaders,
-  openAiError,
-  upstreamUrl,
-} from "./http.ts";
-import {
-  BodyTooLargeError,
-  discardBody,
-  readBodyWithinLimit,
-} from "./body.ts";
+import { forwardRequestHeaders, apiError, upstreamUrl } from "./http.ts";
+import { requestProtocol } from "./protocol.ts";
+import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
 import { upstreamApiKeyValues } from "./credentials.ts";
 import {
   bounded,
@@ -51,7 +44,9 @@ export type InferencePath =
   | "alpha/search"
   | "chat/completions"
   | "images/generations"
-  | "images/edits";
+  | "images/edits"
+  | "messages"
+  | "messages/count_tokens";
 
 const MAX_INFERENCE_BODY_MIB = 96;
 export const MAX_INFERENCE_BODY_BYTES = MAX_INFERENCE_BODY_MIB * 1024 * 1024;
@@ -104,10 +99,7 @@ async function fetchAttempt(
     timeoutError = new UpstreamAttemptTimeoutError(timeoutMs);
     timeoutController.abort(timeoutError);
   }, timeoutMs);
-  const signal = AbortSignal.any([
-    request.signal,
-    timeoutController.signal,
-  ]);
+  const signal = AbortSignal.any([request.signal, timeoutController.signal]);
 
   try {
     return await fetch(new Request(request, { signal }));
@@ -244,6 +236,7 @@ export async function handleInference(
     client.api_key,
     ...upstreamApiKeyValues(config),
   ]);
+  const protocol = requestProtocol(request);
   let rawBody: Uint8Array<ArrayBuffer>;
   try {
     rawBody = await readBodyWithinLimit(
@@ -257,7 +250,8 @@ export async function handleInference(
         outcome: "request_too_large",
         inference: { max_body_bytes: MAX_INFERENCE_BODY_BYTES },
       });
-      return openAiError(
+      return apiError(
+        protocol,
         413,
         `Request body exceeds the ${MAX_INFERENCE_BODY_MIB} MiB limit`,
         "invalid_request_error",
@@ -276,7 +270,11 @@ export async function handleInference(
       outcome: "invalid_request",
       error: errorMessage(error),
     });
-    return openAiError(400, error instanceof Error ? error.message : "invalid request body");
+    return apiError(
+      protocol,
+      400,
+      error instanceof Error ? error.message : "invalid request body",
+    );
   }
 
   const route = resolveModelRoute(
@@ -298,14 +296,20 @@ export async function handleInference(
   });
   if (route.targets.length === 0) {
     requestLog?.warn({ outcome: "model_not_found" });
-    return openAiError(400, `Model ${payload.model} is not available for this API key`, "invalid_request_error", "model_not_found");
+    return apiError(
+      protocol,
+      400,
+      `Model ${payload.model} is not available for this API key`,
+      "invalid_request_error",
+      "model_not_found",
+    );
   }
   const sessionId = sessionIdForInference(request, payload, upstreamPath);
-  const selection = await selectAvailableServiceWithDetails(env, route, {
-    ...(sessionId
-      ? { session: { clientApiKey: client.api_key, sessionId } }
-      : {}),
-  });
+  const selection = await selectAvailableServiceWithDetails(
+    env,
+    route,
+    sessionId ? { session: { clientApiKey: client.api_key, sessionId } } : {},
+  );
   const target = selection.target;
   const routing = {
     candidate_services: candidateServices,
@@ -317,14 +321,16 @@ export async function handleInference(
     ...(selection.affinity ? { affinity: selection.affinity } : {}),
     ...(target
       ? {
-        selected_service: target.service.id,
-        selected_key_id: target.key.id,
-      }
+          selected_service: target.service.id,
+          selected_key_id: target.key.id,
+        }
       : {}),
   };
   if (
     selection.checks.some((check) => check.reason === "health_read_failed") ||
-    selection.keyChecks.some((check) => check.reason === "health_read_failed") ||
+    selection.keyChecks.some(
+      (check) => check.reason === "health_read_failed",
+    ) ||
     selection.affinity?.status === "failed"
   ) {
     requestLog?.warn({ routing });
@@ -333,7 +339,13 @@ export async function handleInference(
   }
   if (!target) {
     requestLog?.warn({ outcome: "service_cooling_down" });
-    return openAiError(503, `No healthy service is currently available for model ${payload.model}`, "server_error", "service_cooling_down");
+    return apiError(
+      protocol,
+      503,
+      `No healthy service is currently available for model ${payload.model}`,
+      "server_error",
+      "service_cooling_down",
+    );
   }
   const { service, key: selectedKey } = target;
 
@@ -356,18 +368,19 @@ export async function handleInference(
   const incomingUrl = new URL(request.url);
   const startedAt = performance.now();
   const result = await fetchWithConfiguredRetries(
-    () => new Request(upstreamUrl(service, upstreamPath, incomingUrl.search), {
-      method: request.method,
-      headers,
-      body,
-      redirect: "manual",
-    }),
+    () =>
+      new Request(upstreamUrl(service, upstreamPath, incomingUrl.search), {
+        method: request.method,
+        headers,
+        body,
+        redirect: "manual",
+      }),
     service.retry,
     {
       ...retryOptions,
       onResponse: async (response, attempt) => {
         await retryOptions.onResponse?.(response, attempt);
-        if (isKeyHealthFailureStatus(response.status)) {
+        if (isProtocolKeyHealthFailureStatus(response.status, protocol)) {
           await scheduleHealthUpdate(
             context,
             recordKeyFailure(env, service.id, selectedKey.id, requestId),
@@ -394,7 +407,13 @@ export async function handleInference(
       context,
       recordServiceFailure(env, service.id, requestId),
     );
-    return openAiError(502, "The selected upstream service could not be reached", "server_error", "upstream_unavailable");
+    return apiError(
+      protocol,
+      502,
+      "The selected upstream service could not be reached",
+      "server_error",
+      "upstream_unavailable",
+    );
   }
 
   const upstreamResponse = result.response;
@@ -425,14 +444,16 @@ export async function handleInference(
       });
       if (hasJsonUpstreamError(upstreamResponse)) {
         const responseFields = upstreamResponseLogFields(upstreamResponse);
-        requestLog.defer(responseFields.then((fields) => {
-          requestLog.set({
-            upstream: {
-              ...upstreamBase,
-              ...requestLog.limitUpstreamErrorFields(fields),
-            },
-          });
-        }));
+        requestLog.defer(
+          responseFields.then((fields) => {
+            requestLog.set({
+              upstream: {
+                ...upstreamBase,
+                ...requestLog.limitUpstreamErrorFields(fields),
+              },
+            });
+          }),
+        );
       }
     }
   }
@@ -443,7 +464,7 @@ export async function handleInference(
       recordServiceSuccess(env, service.id, requestId),
     );
   } else {
-    if (isHealthFailureStatus(upstreamResponse.status)) {
+    if (isProtocolHealthFailureStatus(upstreamResponse.status, protocol)) {
       await scheduleHealthUpdate(
         context,
         recordServiceFailure(env, service.id, requestId),

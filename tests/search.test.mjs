@@ -12,22 +12,28 @@ import {
 function fixture(mode) {
   return {
     config: {
-      services: [{
-        id: "inference",
-        base_url: "https://inference.example/v1",
-        keys: [{
-          id: "inference-key",
-          api_key: "inference-secret",
+      services: [
+        {
+          id: "inference",
+          base_url: "https://inference.example/v1",
+          keys: [
+            {
+              id: "inference-key",
+              api_key: "inference-secret",
+              disabled: false,
+              priority: 100,
+            },
+          ],
           disabled: false,
           priority: 100,
-        }],
-        disabled: false,
-        priority: 100,
-        models: ["upstream-model"],
-        supports_websocket: false,
-        supports_web_search: false,
-      }],
-      api_keys: [{ id: "client", api_key: "client-key", services: ["inference"] }],
+          models: ["upstream-model"],
+          supports_websocket: false,
+          supports_web_search: false,
+        },
+      ],
+      api_keys: [
+        { id: "client", api_key: "client-key", services: ["inference"] },
+      ],
       model_routes: { "client-model": { model: "upstream-model" } },
       web_search: {
         mode,
@@ -64,24 +70,31 @@ test("Tavily adapter maps search queries and emits Codex search output", async (
   const originalFetch = globalThis.fetch;
   const captured = [];
   globalThis.fetch = async (input, init) => {
-    const upstream = input instanceof Request ? input : new Request(input, init);
+    const upstream =
+      input instanceof Request ? input : new Request(input, init);
     captured.push({
       url: upstream.url,
       authorization: upstream.headers.get("authorization"),
       body: JSON.parse(await upstream.text()),
     });
     return Response.json({
-      results: [{
-        title: "Tavily result",
-        url: "https://result.example/tavily",
-        content: "Relevant Tavily content",
-        score: 0.9,
-      }],
+      results: [
+        {
+          title: "Tavily result",
+          url: "https://result.example/tavily",
+          content: "Relevant Tavily content",
+          score: 0.9,
+        },
+      ],
     });
   };
   try {
     const response = await handleConfiguredWebSearch(
-      request({ search_query: [{ q: "latest docs", recency: 7, domains: ["docs.example"] }] }),
+      request({
+        search_query: [
+          { q: "latest docs", recency: 7, domains: ["docs.example"] },
+        ],
+      }),
       config,
       client,
     );
@@ -94,13 +107,15 @@ test("Tavily adapter maps search queries and emits Codex search output", async (
         "URL: https://result.example/tavily",
         "Snippet: Relevant Tavily content",
       ].join("\n"),
-      results: [{
-        type: "text_result",
-        ref_id: "turn0search0",
-        url: "https://result.example/tavily",
-        title: "Tavily result",
-        snippet: "Relevant Tavily content",
-      }],
+      results: [
+        {
+          type: "text_result",
+          ref_id: "turn0search0",
+          url: "https://result.example/tavily",
+          title: "Tavily result",
+          snippet: "Relevant Tavily content",
+        },
+      ],
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -114,9 +129,14 @@ test("Tavily adapter maps search queries and emits Codex search output", async (
     max_results: 3,
     include_answer: false,
     include_raw_content: false,
-    start_date: new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10),
+    start_date: new Date(Date.now() - 7 * 86_400_000)
+      .toISOString()
+      .slice(0, 10),
   });
-  assert.equal(JSON.stringify(captured[0].body).includes("private conversation"), false);
+  assert.equal(
+    JSON.stringify(captured[0].body).includes("private conversation"),
+    false,
+  );
 });
 
 test("Exa adapter maps each query without proxy fallback", async () => {
@@ -124,38 +144,49 @@ test("Exa adapter maps each query without proxy fallback", async () => {
   const originalFetch = globalThis.fetch;
   const captured = [];
   globalThis.fetch = async (input, init) => {
-    const upstream = input instanceof Request ? input : new Request(input, init);
+    const upstream =
+      input instanceof Request ? input : new Request(input, init);
     captured.push({
       url: upstream.url,
       apiKey: upstream.headers.get("x-api-key"),
       body: JSON.parse(await upstream.text()),
     });
     return Response.json({
-      results: [{
-        title: "Exa result",
-        url: `https://result.example/${captured.length}`,
-        highlights: ["First highlight", "Second highlight"],
-      }],
+      results: [
+        {
+          title: "Exa result",
+          url: `https://result.example/${captured.length}`,
+          highlights: ["First highlight", "Second highlight"],
+        },
+      ],
     });
   };
   try {
     const response = await handleConfiguredWebSearch(
-      request({ search_query: [{ q: "one" }, { q: "two", domains: ["exa.ai"] }] }),
+      request({
+        search_query: [{ q: "one" }, { q: "two", domains: ["exa.ai"] }],
+      }),
       config,
       client,
     );
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.results.length, 2);
-    assert.equal(body.results[0].snippet, "First highlight [...] Second highlight");
+    assert.equal(
+      body.results[0].snippet,
+      "First highlight [...] Second highlight",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
-  assert.deepEqual(captured.map((entry) => entry.url), [
-    "https://exa.example/search",
-    "https://exa.example/search",
-  ]);
-  assert.deepEqual(captured.map((entry) => entry.apiKey), ["exa-secret", "exa-secret"]);
+  assert.deepEqual(
+    captured.map((entry) => entry.url),
+    ["https://exa.example/search", "https://exa.example/search"],
+  );
+  assert.deepEqual(
+    captured.map((entry) => entry.apiKey),
+    ["exa-secret", "exa-secret"],
+  );
   assert.deepEqual(captured[1].body, {
     query: "two",
     numResults: 3,
@@ -169,14 +200,19 @@ test("adapter enforces global domain filters", async () => {
   const originalFetch = globalThis.fetch;
   let providerBody;
   globalThis.fetch = async (input, init) => {
-    const upstream = input instanceof Request ? input : new Request(input, init);
+    const upstream =
+      input instanceof Request ? input : new Request(input, init);
     providerBody = JSON.parse(await upstream.text());
     return Response.json({ results: [] });
   };
   try {
     const response = await handleConfiguredWebSearch(
       request(
-        { search_query: [{ q: "docs", domains: ["docs.example", "other.example"] }] },
+        {
+          search_query: [
+            { q: "docs", domains: ["docs.example", "other.example"] },
+          ],
+        },
         {
           filters: {
             allowed_domains: ["docs.example"],
@@ -229,7 +265,10 @@ test("adapters enforce provider-specific domain limits", async () => {
         client,
       );
       assert.equal(response.status, 400);
-      assert.equal((await response.json()).error.code, "invalid_search_request");
+      assert.equal(
+        (await response.json()).error.code,
+        "invalid_search_request",
+      );
     }
   } finally {
     globalThis.fetch = originalFetch;
@@ -295,7 +334,10 @@ test("adapter treats a malformed successful provider response as unavailable", a
       client,
     );
     assert.equal(response.status, 502);
-    assert.equal((await response.json()).error.code, "web_search_invalid_response");
+    assert.equal(
+      (await response.json()).error.code,
+      "web_search_invalid_response",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -316,7 +358,10 @@ test("adapter rejects unsupported commands before calling a provider", async () 
       client,
     );
     assert.equal(response.status, 400);
-    assert.equal((await response.json()).error.code, "unsupported_search_command");
+    assert.equal(
+      (await response.json()).error.code,
+      "unsupported_search_command",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -328,7 +373,8 @@ test("adapter accepts and validates the Codex response length hint", async () =>
   const originalFetch = globalThis.fetch;
   const providerBodies = [];
   globalThis.fetch = async (input, init) => {
-    const upstream = input instanceof Request ? input : new Request(input, init);
+    const upstream =
+      input instanceof Request ? input : new Request(input, init);
     providerBodies.push(JSON.parse(await upstream.text()));
     return Response.json({ results: [] });
   };
@@ -368,7 +414,10 @@ test("adapter rejects unknown protocol fields instead of silently ignoring them"
       "future_filter",
     ],
     [
-      request({ search_query: [{ q: "docs" }] }, { user_location: { country: "US" } }),
+      request(
+        { search_query: [{ q: "docs" }] },
+        { user_location: { country: "US" } },
+      ),
       "unsupported_search_setting",
       "settings.user_location",
     ],
@@ -389,11 +438,18 @@ test("adapter rejects unknown protocol fields instead of silently ignoring them"
   };
   try {
     for (const [searchRequest, code, message] of cases) {
-      const response = await handleConfiguredWebSearch(searchRequest, config, client);
+      const response = await handleConfiguredWebSearch(
+        searchRequest,
+        config,
+        client,
+      );
       assert.equal(response.status, 400);
       const body = await response.json();
       assert.equal(body.error.code, code);
-      assert.match(body.error.message, new RegExp(message.replaceAll(".", "\\.")));
+      assert.match(
+        body.error.message,
+        new RegExp(message.replaceAll(".", "\\.")),
+      );
     }
   } finally {
     globalThis.fetch = originalFetch;
@@ -439,7 +495,10 @@ test("adapter accepts and validates Codex search metadata", async () => {
       client,
     );
     assert.equal(invalidResponse.status, 400);
-    assert.equal((await invalidResponse.json()).error.code, "invalid_search_request");
+    assert.equal(
+      (await invalidResponse.json()).error.code,
+      "invalid_search_request",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -449,14 +508,17 @@ test("adapter accepts and validates Codex search metadata", async () => {
 test("Exa adapter falls back when highlights are empty", async () => {
   const { config, client } = fixture("exa");
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => Response.json({
-    results: [{
-      title: "Exa result",
-      url: "https://result.example/exa",
-      highlights: [],
-      summary: "Summary fallback",
-    }],
-  });
+  globalThis.fetch = async () =>
+    Response.json({
+      results: [
+        {
+          title: "Exa result",
+          url: "https://result.example/exa",
+          highlights: [],
+          summary: "Summary fallback",
+        },
+      ],
+    });
   try {
     const response = await handleConfiguredWebSearch(
       request({ search_query: [{ q: "docs" }] }),
@@ -464,7 +526,10 @@ test("Exa adapter falls back when highlights are empty", async () => {
       client,
     );
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).results[0].snippet, "Summary fallback");
+    assert.equal(
+      (await response.json()).results[0].snippet,
+      "Summary fallback",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -473,15 +538,24 @@ test("Exa adapter falls back when highlights are empty", async () => {
 test("adapter drops invalid, credentialed, and overlong provider URLs", async () => {
   const { config, client } = fixture("tavily");
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => Response.json({
-    results: [
-      { title: "relative", url: "/relative", content: "ignored" },
-      { title: "script", url: "javascript:alert(1)", content: "ignored" },
-      { title: "credentials", url: "https://user:secret@example.com", content: "ignored" },
-      { title: "long", url: `https://example.com/${"a".repeat(4096)}`, content: "ignored" },
-      { title: "valid", url: "https://example.com/result", content: "kept" },
-    ],
-  });
+  globalThis.fetch = async () =>
+    Response.json({
+      results: [
+        { title: "relative", url: "/relative", content: "ignored" },
+        { title: "script", url: "javascript:alert(1)", content: "ignored" },
+        {
+          title: "credentials",
+          url: "https://user:secret@example.com",
+          content: "ignored",
+        },
+        {
+          title: "long",
+          url: `https://example.com/${"a".repeat(4096)}`,
+          content: "ignored",
+        },
+        { title: "valid", url: "https://example.com/result", content: "kept" },
+      ],
+    });
   try {
     const response = await handleConfiguredWebSearch(
       request({ search_query: [{ q: "docs" }] }),
@@ -490,7 +564,10 @@ test("adapter drops invalid, credentialed, and overlong provider URLs", async ()
     );
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.deepEqual(body.results.map((result) => result.url), ["https://example.com/result"]);
+    assert.deepEqual(
+      body.results.map((result) => result.url),
+      ["https://example.com/result"],
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -510,12 +587,14 @@ test("adapter limits provider query concurrency", async () => {
   };
   try {
     const response = await handleConfiguredWebSearch(
-      request({ search_query: [
-        { q: "one" },
-        { q: "two" },
-        { q: "three" },
-        { q: "four" },
-      ] }),
+      request({
+        search_query: [
+          { q: "one" },
+          { q: "two" },
+          { q: "three" },
+          { q: "four" },
+        ],
+      }),
       config,
       client,
     );
@@ -531,14 +610,19 @@ test("adapter rejects and cancels a response over the per-query budget", async (
   const { config, client } = fixture("tavily");
   const originalFetch = globalThis.fetch;
   let cancelled = false;
-  globalThis.fetch = async () => new Response(new ReadableStream({
-    start(controller) {
-      controller.enqueue(new Uint8Array(MAX_SEARCH_PROVIDER_RESPONSE_BYTES + 1));
-    },
-    cancel() {
-      cancelled = true;
-    },
-  }));
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new Uint8Array(MAX_SEARCH_PROVIDER_RESPONSE_BYTES + 1),
+          );
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    );
   try {
     const response = await handleConfiguredWebSearch(
       request({ search_query: [{ q: "docs" }] }),
@@ -546,7 +630,10 @@ test("adapter rejects and cancels a response over the per-query budget", async (
       client,
     );
     assert.equal(response.status, 502);
-    assert.equal((await response.json()).error.code, "web_search_invalid_response");
+    assert.equal(
+      (await response.json()).error.code,
+      "web_search_invalid_response",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -556,31 +643,41 @@ test("adapter rejects and cancels a response over the per-query budget", async (
 test("adapter enforces a total response budget across the query batch", async () => {
   const { config, client } = fixture("exa");
   const originalFetch = globalThis.fetch;
-  const content = "x".repeat(Math.floor(MAX_SEARCH_BATCH_RESPONSE_BYTES / 4) + 64 * 1024);
+  const content = "x".repeat(
+    Math.floor(MAX_SEARCH_BATCH_RESPONSE_BYTES / 4) + 64 * 1024,
+  );
   globalThis.fetch = async (input, init) => {
-    const upstream = input instanceof Request ? input : new Request(input, init);
+    const upstream =
+      input instanceof Request ? input : new Request(input, init);
     const { query } = JSON.parse(await upstream.text());
     return Response.json({
-      results: [{
-        title: query,
-        url: `https://result.example/${query}`,
-        text: content,
-      }],
+      results: [
+        {
+          title: query,
+          url: `https://result.example/${query}`,
+          text: content,
+        },
+      ],
     });
   };
   try {
     const response = await handleConfiguredWebSearch(
-      request({ search_query: [
-        { q: "one" },
-        { q: "two" },
-        { q: "three" },
-        { q: "four" },
-      ] }),
+      request({
+        search_query: [
+          { q: "one" },
+          { q: "two" },
+          { q: "three" },
+          { q: "four" },
+        ],
+      }),
       config,
       client,
     );
     assert.equal(response.status, 502);
-    assert.equal((await response.json()).error.code, "web_search_invalid_response");
+    assert.equal(
+      (await response.json()).error.code,
+      "web_search_invalid_response",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -591,7 +688,8 @@ test("adapter returns non-JSON provider errors without calling an inference serv
   const originalFetch = globalThis.fetch;
   const urls = [];
   globalThis.fetch = async (input, init) => {
-    const upstream = input instanceof Request ? input : new Request(input, init);
+    const upstream =
+      input instanceof Request ? input : new Request(input, init);
     urls.push(upstream.url);
     return new Response("rate limited", { status: 429 });
   };
@@ -602,7 +700,10 @@ test("adapter returns non-JSON provider errors without calling an inference serv
       client,
     );
     assert.equal(response.status, 429);
-    assert.equal((await response.json()).error.code, "web_search_upstream_error");
+    assert.equal(
+      (await response.json()).error.code,
+      "web_search_upstream_error",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -634,7 +735,10 @@ test("adapter preserves an upstream error status without buffering the error bod
       client,
     );
     assert.equal(response.status, 429);
-    assert.equal((await response.json()).error.code, "web_search_upstream_error");
+    assert.equal(
+      (await response.json()).error.code,
+      "web_search_upstream_error",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -647,7 +751,8 @@ test("adapter aborts sibling provider requests when one query fails", async () =
   let firstResolve;
   let siblingAborted = false;
   globalThis.fetch = async (input, init) => {
-    const upstream = input instanceof Request ? input : new Request(input, init);
+    const upstream =
+      input instanceof Request ? input : new Request(input, init);
     const body = JSON.parse(await upstream.text());
     if (body.query === "first") {
       firstResolve?.();
@@ -655,10 +760,14 @@ test("adapter aborts sibling provider requests when one query fails", async () =
     }
     await new Promise((resolve) => {
       firstResolve = resolve;
-      init?.signal?.addEventListener("abort", () => {
-        siblingAborted = true;
-        resolve();
-      }, { once: true });
+      init?.signal?.addEventListener(
+        "abort",
+        () => {
+          siblingAborted = true;
+          resolve();
+        },
+        { once: true },
+      );
     });
     throw new Error("sibling request aborted");
   };

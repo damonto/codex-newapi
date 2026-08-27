@@ -36,7 +36,10 @@ export class ProviderNetworkError extends Error {
 }
 
 export class ProviderTimeoutError extends ProviderNetworkError {
-  constructor(readonly timeoutMs: number, options?: ErrorOptions) {
+  constructor(
+    readonly timeoutMs: number,
+    options?: ErrorOptions,
+  ) {
     super(`web search provider timed out after ${timeoutMs} ms`, options);
     this.name = "ProviderTimeoutError";
   }
@@ -51,7 +54,9 @@ export class ProviderResponseTooLargeError extends ProviderProtocolError {
 
 export class SearchBatchBudgetExceededError extends ProviderProtocolError {
   constructor(readonly maxBytes: number) {
-    super(`web search provider batch exceeds the ${maxBytes}-byte response budget`);
+    super(
+      `web search provider batch exceeds the ${maxBytes}-byte response budget`,
+    );
     this.name = "SearchBatchBudgetExceededError";
   }
 }
@@ -77,13 +82,19 @@ async function fetchProvider(
   budget: SearchBatchBudget,
   signal: AbortSignal,
 ): Promise<NormalizedSearchResult[]> {
-  const includeDomains = intersectDomains(query.domains, filters.allowedDomains);
+  const includeDomains = intersectDomains(
+    query.domains,
+    filters.allowedDomains,
+  );
   if (includeDomains && includeDomains.length > provider.maxDomains.include) {
     throw new ProviderInputError(
       `${provider.mode} supports at most ${provider.maxDomains.include} included domains`,
     );
   }
-  if (filters.blockedDomains && filters.blockedDomains.length > provider.maxDomains.exclude) {
+  if (
+    filters.blockedDomains &&
+    filters.blockedDomains.length > provider.maxDomains.exclude
+  ) {
     throw new ProviderInputError(
       `${provider.mode} supports at most ${provider.maxDomains.exclude} excluded domains`,
     );
@@ -122,7 +133,9 @@ async function fetchProvider(
       );
     } catch (error) {
       if (error instanceof BodyTooLargeError) {
-        throw new ProviderResponseTooLargeError(MAX_SEARCH_PROVIDER_RESPONSE_BYTES);
+        throw new ProviderResponseTooLargeError(
+          MAX_SEARCH_PROVIDER_RESPONSE_BYTES,
+        );
       }
       throw error;
     }
@@ -137,7 +150,10 @@ async function fetchProvider(
     }
     return provider.parseResponse(body);
   } catch (error) {
-    if (error instanceof ProviderHttpError || error instanceof ProviderProtocolError) {
+    if (
+      error instanceof ProviderHttpError ||
+      error instanceof ProviderProtocolError
+    ) {
       throw error;
     }
     if (timeoutError && !signal.aborted) {
@@ -162,7 +178,7 @@ export async function executeSearchBatch(
   const batchController = new AbortController();
   const signal = AbortSignal.any([requestSignal, batchController.signal]);
   const budget = new SearchBatchBudget(MAX_SEARCH_BATCH_RESPONSE_BYTES);
-  const responses = new Array<NormalizedSearchResult[]>(queries.length);
+  const responses: NormalizedSearchResult[][] = [];
   let nextIndex = 0;
   let firstError: unknown;
   const workers = Array.from(

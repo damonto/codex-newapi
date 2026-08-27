@@ -145,9 +145,9 @@ async function prepareMergedCatalog({
     .map((entry) => entry.name)
     .concat(
       [...catalogOverrides.keys()].filter(
-        (fileName) => fileName.endsWith(".json") && !entries.some(
-          (entry) => entry.isFile() && entry.name === fileName,
-        ),
+        (fileName) =>
+          fileName.endsWith(".json") &&
+          !entries.some((entry) => entry.isFile() && entry.name === fileName),
       ),
     )
     .sort();
@@ -171,10 +171,7 @@ async function prepareMergedCatalog({
           `duplicate model slug ${model.slug} in ${sourceLabel} and ${previousSource}`,
         );
       }
-      sourcesBySlug.set(
-        model.slug,
-        `${sourceLabel} models[${index}]`,
-      );
+      sourcesBySlug.set(model.slug, `${sourceLabel} models[${index}]`);
       models.push(model);
     }
   }
@@ -220,12 +217,7 @@ export async function syncCodexModels({
 
   const prepared = await prepareMergedCatalog({
     modelsDirectory,
-    catalogOverrides: new Map([
-      [
-        CODEX_FILE_NAME,
-        codexCatalog,
-      ],
-    ]),
+    catalogOverrides: new Map([[CODEX_FILE_NAME, codexCatalog]]),
   });
 
   const codexChanged = await replaceIfChanged(codexTargetPath, catalogText);

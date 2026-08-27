@@ -60,11 +60,7 @@ const MAX_PENDING_WEBSOCKET_BYTES = 32 * 1024 * 1024;
 const SESSION_STATE_KEY = "session";
 
 type SessionPhase =
-  | "awaiting_first_frame"
-  | "routing"
-  | "connecting"
-  | "open"
-  | "closed";
+  "awaiting_first_frame" | "routing" | "connecting" | "open" | "closed";
 type SocketRole = "client" | "upstream";
 
 interface SocketAttachment {
@@ -125,15 +121,17 @@ function requestIdFrom(request: Request): string | undefined {
 
 function clientDigestFrom(request: Request): string | undefined {
   const digest = request.headers.get(RESPONSES_WEBSOCKET_CLIENT_DIGEST_HEADER);
-  return digest && /^[a-f0-9]{64}$/i.test(digest) ? digest.toLowerCase() : undefined;
+  return digest && /^[a-f0-9]{64}$/i.test(digest)
+    ? digest.toLowerCase()
+    : undefined;
 }
 
 function targetFromRoute(
   route: ModelRoute,
   state: StoredWebSocketSession,
 ): ServiceTarget | undefined {
-  const routed = route.targets.find(({ service }) =>
-    service.id === state.selected_service_id
+  const routed = route.targets.find(
+    ({ service }) => service.id === state.selected_service_id,
   );
   const key = routed?.keys.find((entry) => entry.id === state.selected_key_id);
   return routed && key ? { service: routed.service, key } : undefined;
@@ -142,10 +140,12 @@ function targetFromRoute(
 function shouldRecordUpstreamFailure(
   state: StoredWebSocketSession | undefined,
 ): boolean {
-  return state !== undefined &&
+  return (
+    state !== undefined &&
     !state.response_outcome_recorded &&
     (state.phase === "connecting" ||
-      (state.phase === "open" && state.active_response));
+      (state.phase === "open" && state.active_response))
+  );
 }
 
 function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
@@ -187,9 +187,11 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     const requestId = requestIdFrom(request);
     const clientDigest = clientDigestFrom(request);
     if (!requestId || !clientDigest) {
-      return new Response("Missing internal WebSocket metadata", { status: 400 });
+      return new Response("Missing internal WebSocket metadata", {
+        status: 400,
+      });
     }
-    if (await this.ctx.storage.get(SESSION_STATE_KEY) !== undefined) {
+    if ((await this.ctx.storage.get(SESSION_STATE_KEY)) !== undefined) {
       return new Response("WebSocket session already exists", { status: 409 });
     }
 
@@ -204,9 +206,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       incoming_search: new URL(request.url).search,
       forwarded_headers: [...forwardedHeaders.entries()],
       client_api_key_digest: clientDigest,
-      ...(headerSessionId
-        ? { header_session_id: headerSessionId }
-        : {}),
+      ...(headerSessionId ? { header_session_id: headerSessionId } : {}),
       active_response: false,
       response_outcome_recorded: false,
     };
@@ -216,7 +216,9 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     const pair = new WebSocketPair();
     try {
       this.ctx.acceptWebSocket(pair[1], ["client"]);
-      pair[1].serializeAttachment({ role: "client" } satisfies SocketAttachment);
+      pair[1].serializeAttachment({
+        role: "client",
+      } satisfies SocketAttachment);
     } catch (error) {
       await Promise.all([
         this.ctx.storage.delete(SESSION_STATE_KEY),
@@ -263,9 +265,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     mutate: (state: StoredWebSocketSession) => StoredWebSocketSession,
   ): Promise<StateTransition | undefined> {
     return this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<StoredWebSocketSession>(
-        SESSION_STATE_KEY,
-      );
+      const current =
+        await transaction.get<StoredWebSocketSession>(SESSION_STATE_KEY);
       if (!current || !expectedPhases.includes(current.phase)) {
         return undefined;
       }
@@ -328,12 +329,15 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       duration_ms: Math.max(0, Date.now() - state.started_at),
       ...(state.selected_service_id && state.selected_key_id
         ? {
-          service_id: state.selected_service_id,
-          key_id: state.selected_key_id,
-        }
+            service_id: state.selected_service_id,
+            key_id: state.selected_key_id,
+          }
         : {}),
     };
-    if (code === 1000 && (outcome === "client_closed" || outcome === "upstream_closed")) {
+    if (
+      code === 1000 &&
+      (outcome === "client_closed" || outcome === "upstream_closed")
+    ) {
       logInfo("websocket.closed", fields);
     } else {
       logWarn("websocket.closed", fields);
@@ -402,9 +406,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
   }
 
   private async recordServiceFailureOnce(): Promise<void> {
-    const transition = await this.transition(
-      ["connecting", "open"],
-      (state) => state.response_outcome_recorded
+    const transition = await this.transition(["connecting", "open"], (state) =>
+      state.response_outcome_recorded
         ? state
         : { ...state, response_outcome_recorded: true },
     );
@@ -449,12 +452,15 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     }));
   }
 
-  private async processUpstreamMessage(message: WebSocketMessage): Promise<void> {
+  private async processUpstreamMessage(
+    message: WebSocketMessage,
+  ): Promise<void> {
     const state = await this.loadState();
     if (state?.phase !== "open") {
       return;
     }
-    const payload = typeof message === "string" ? parseObject(message) : undefined;
+    const payload =
+      typeof message === "string" ? parseObject(message) : undefined;
     const status = payload ? errorStatus(payload) : undefined;
     if (
       status !== undefined &&
@@ -489,7 +495,10 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       await this.recordCompletedResponse();
       return;
     }
-    if (payload.type === "response.failed" || payload.type === "response.incomplete") {
+    if (
+      payload.type === "response.failed" ||
+      payload.type === "response.incomplete"
+    ) {
       await this.markResponseInactive();
       return;
     }
@@ -556,11 +565,12 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     if (upstreamFailed) {
       await this.recordServiceFailureOnce();
     }
-    const outcome = state?.phase === "connecting" && upstreamFailed
-      ? "upstream_closed_during_connect"
-      : upstreamFailed
-      ? "upstream_closed_during_response"
-      : "upstream_closed";
+    const outcome =
+      state?.phase === "connecting" && upstreamFailed
+        ? "upstream_closed_during_connect"
+        : upstreamFailed
+          ? "upstream_closed_during_response"
+          : "upstream_closed";
     await this.closeAll(
       event.code,
       event.reason || "upstream websocket closed",
@@ -573,7 +583,11 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     if (shouldRecordUpstreamFailure(state)) {
       await this.recordServiceFailureOnce();
     }
-    await this.closeAll(1011, "upstream websocket error", "upstream_socket_error");
+    await this.closeAll(
+      1011,
+      "upstream websocket error",
+      "upstream_socket_error",
+    );
   }
 
   private async connectUpstream(
@@ -583,16 +597,13 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     target: ServiceTarget,
     sessionId: string | undefined,
   ): Promise<void> {
-    const connecting = await this.transition(
-      ["routing"],
-      (state) => ({
-        ...state,
-        phase: "connecting",
-        ...(sessionId ? { current_session_id: sessionId } : {}),
-        selected_service_id: target.service.id,
-        selected_key_id: target.key.id,
-      }),
-    );
+    const connecting = await this.transition(["routing"], (state) => ({
+      ...state,
+      phase: "connecting",
+      ...(sessionId ? { current_session_id: sessionId } : {}),
+      selected_service_id: target.service.id,
+      selected_key_id: target.key.id,
+    }));
     if (!connecting) {
       return;
     }
@@ -603,15 +614,20 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     headers.set("authorization", `Bearer ${target.key.api_key}`);
     headers.set("upgrade", "websocket");
     const result = await fetchWithConfiguredRetries(
-      () => new Request(
-        upstreamUrl(target.service, "responses", connecting.next.incoming_search),
-        {
-          method: "GET",
-          headers,
-          redirect: "manual",
-          signal: controller.signal,
-        },
-      ),
+      () =>
+        new Request(
+          upstreamUrl(
+            target.service,
+            "responses",
+            connecting.next.incoming_search,
+          ),
+          {
+            method: "GET",
+            headers,
+            redirect: "manual",
+            signal: controller.signal,
+          },
+        ),
       target.service.retry,
       {
         wait: (delayMs) => abortableDelay(delayMs, controller.signal),
@@ -634,7 +650,11 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
 
     const current = await this.loadState();
     if (current?.phase !== "connecting") {
-      closeSocket(result.response?.webSocket ?? undefined, 1000, "client disconnected");
+      closeSocket(
+        result.response?.webSocket ?? undefined,
+        1000,
+        "client disconnected",
+      );
       return;
     }
     if (!result.response) {
@@ -681,11 +701,12 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       const body = await upstreamErrorText(response);
       safeSend(
         this.clientSocket(),
-        body ?? gatewayErrorEvent(
-          response.status || 502,
-          `Upstream WebSocket upgrade failed with status ${response.status}`,
-          "websocket_upgrade_failed",
-        ),
+        body ??
+          gatewayErrorEvent(
+            response.status || 502,
+            `Upstream WebSocket upgrade failed with status ${response.status}`,
+            "websocket_upgrade_failed",
+          ),
       );
       logWarn("websocket.upgrade_rejected", {
         request_id: current.request_id,
@@ -781,8 +802,10 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       });
       return targetIsAvailableForRoute(this.env, route, selectedTarget);
     }
-    return selection.target?.service.id === selectedTarget.service.id &&
-      selection.target.key.id === selectedTarget.key.id;
+    return (
+      selection.target?.service.id === selectedTarget.service.id &&
+      selection.target.key.id === selectedTarget.key.id
+    );
   }
 
   private async processFirstFrame(message: WebSocketMessage): Promise<void> {
@@ -795,7 +818,11 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
           "invalid_websocket_first_frame",
         ),
       );
-      await this.closeAll(1008, "invalid first websocket frame", "invalid_first_frame");
+      await this.closeAll(
+        1008,
+        "invalid first websocket frame",
+        "invalid_first_frame",
+      );
       return;
     }
     const parsedFrame = clientFrame(message);
@@ -808,14 +835,21 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
           "invalid_websocket_first_frame",
         ),
       );
-      await this.closeAll(1008, "invalid first websocket frame", "invalid_first_frame");
+      await this.closeAll(
+        1008,
+        "invalid first websocket frame",
+        "invalid_first_frame",
+      );
       return;
     }
 
-    const claimed = await this.transition(["awaiting_first_frame"], (latest) => ({
-      ...latest,
-      phase: "routing",
-    }));
+    const claimed = await this.transition(
+      ["awaiting_first_frame"],
+      (latest) => ({
+        ...latest,
+        phase: "routing",
+      }),
+    );
     if (!claimed) {
       return;
     }
@@ -849,16 +883,18 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     }
 
     const sessionId = claimed.next.header_session_id ?? frame.sessionId;
-    const selection = await selectAvailableServiceWithDetails(this.env, route, {
-      ...(sessionId
+    const selection = await selectAvailableServiceWithDetails(
+      this.env,
+      route,
+      sessionId
         ? {
-          session: {
-            clientApiKey: routingContext.client.api_key,
-            sessionId,
-          },
-        }
-        : {}),
-    });
+            session: {
+              clientApiKey: routingContext.client.api_key,
+              sessionId,
+            },
+          }
+        : {},
+    );
     if (selection.affinity?.status === "failed") {
       logWarn("websocket.affinity.failed", {
         request_id: claimed.next.request_id,
@@ -928,17 +964,18 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
           frame.model,
           { requiredCapability: "supports_websocket" },
         );
-        const sessionId = current.header_session_id ??
+        const sessionId =
+          current.header_session_id ??
           frame.sessionId ??
           current.current_session_id;
         if (
           route.targets.length === 0 ||
-          !await this.validateCurrentTarget(
+          !(await this.validateCurrentTarget(
             current,
             route,
             sessionId,
             routingContext.client,
-          )
+          ))
         ) {
           safeSend(
             this.clientSocket(),
@@ -1040,10 +1077,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     return this.clientMessages;
   }
 
-  webSocketMessage(
-    socket: WebSocket,
-    message: string | ArrayBuffer,
-  ): void {
+  webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
     const role = this.socketRole(socket);
     if (role === "client") {
       this.ctx.waitUntil(this.enqueueClientMessage(message));
@@ -1065,7 +1099,9 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       code,
       reason || `${role ?? "unknown"} websocket closed`,
       role === "client"
-        ? code === 1000 ? "client_closed" : "client_closed_abnormally"
+        ? code === 1000
+          ? "client_closed"
+          : "client_closed_abnormally"
         : "unknown_socket_closed",
     );
   }

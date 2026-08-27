@@ -1,7 +1,4 @@
-import type {
-  WebSearchMode,
-  WebSearchProviderConfig,
-} from "../types.ts";
+import type { WebSearchMode, WebSearchProviderConfig } from "../types.ts";
 
 export type WebSearchProviderMode = Exclude<WebSearchMode, "proxy">;
 

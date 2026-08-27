@@ -50,7 +50,8 @@ async function readBoundedBody(
   const cancelReader = (): void => {
     try {
       releaseDeferred = true;
-      void reader.cancel()
+      void reader
+        .cancel()
         .catch(() => {})
         .finally(() => {
           try {
@@ -115,11 +116,15 @@ async function readBoundedBody(
 
 function isJsonContentType(contentType: string | null): boolean {
   const mediaType = contentType?.split(";", 1)[0]?.trim().toLowerCase();
-  return mediaType === "application/json" || mediaType?.endsWith("+json") === true;
+  return (
+    mediaType === "application/json" || mediaType?.endsWith("+json") === true
+  );
 }
 
 export function hasJsonUpstreamError(response: Response): boolean {
-  return !response.ok && isJsonContentType(response.headers.get("content-type"));
+  return (
+    !response.ok && isJsonContentType(response.headers.get("content-type"))
+  );
 }
 
 function responseRequestId(response: Response): string | undefined {
@@ -137,7 +142,9 @@ export function upstreamResponseFields(response: Response): LogFields {
   const requestId = responseRequestId(response);
   return {
     status: response.status,
-    ...(response.statusText ? { status_text: bounded(response.statusText, 128) } : {}),
+    ...(response.statusText
+      ? { status_text: bounded(response.statusText, 128) }
+      : {}),
     ...(contentType ? { content_type: bounded(contentType, 128) } : {}),
     ...(requestId ? { upstream_request_id: requestId } : {}),
   };

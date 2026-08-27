@@ -23,7 +23,9 @@ test("logging honors production levels and redacts credentials", () => {
     logInfo("ignored", { value: "not emitted" });
     logWarn("upstream.failed", {
       authorization: "Bearer client-secret",
-      error: errorMessage(new Error("https://example.test/?api_key=secret-value")),
+      error: errorMessage(
+        new Error("https://example.test/?api_key=secret-value"),
+      ),
     });
   } finally {
     console.info = original.info;
@@ -51,7 +53,10 @@ test("logging emits matching console methods and structured summary fields", () 
   console.error = (entry) => entries.push({ method: "error", entry });
   try {
     configureLogging("info");
-    logInfo("request.succeeded", { level: "overridden", message: "overridden" });
+    logInfo("request.succeeded", {
+      level: "overridden",
+      message: "overridden",
+    });
     logWarn("request.delayed");
     logError("request.failed");
   } finally {
@@ -61,7 +66,10 @@ test("logging emits matching console methods and structured summary fields", () 
     configureLogging("info");
   }
 
-  assert.deepEqual(entries.map(({ method }) => method), ["info", "warn", "error"]);
+  assert.deepEqual(
+    entries.map(({ method }) => method),
+    ["info", "warn", "error"],
+  );
   assert.deepEqual(
     entries.map(({ entry }) => ({
       event: entry.event,
@@ -69,7 +77,11 @@ test("logging emits matching console methods and structured summary fields", () 
       message: entry.message,
     })),
     [
-      { event: "request.succeeded", level: "info", message: "request.succeeded" },
+      {
+        event: "request.succeeded",
+        level: "info",
+        message: "request.succeeded",
+      },
       { event: "request.delayed", level: "warn", message: "request.delayed" },
       { event: "request.failed", level: "error", message: "request.failed" },
     ],
@@ -88,7 +100,9 @@ test("request logs emit one completion summary", () => {
     configureLogging("info");
     const context = new RequestLogContext(
       "request-1",
-      new Request("https://gateway.example/v1/responses?token=hidden", { method: "POST" }),
+      new Request("https://gateway.example/v1/responses?token=hidden", {
+        method: "POST",
+      }),
       "responses",
     );
     context.set({ routing: { selected_service: "primary" } });
@@ -126,7 +140,10 @@ test("request logs keep dynamic redaction values request-scoped without truncati
       "responses",
     );
     protectedContext.registerSensitiveValues([
-      ...Array.from({ length: 300 }, (_, index) => `long-opaque-value-${index}`),
+      ...Array.from(
+        { length: 300 },
+        (_, index) => `long-opaque-value-${index}`,
+      ),
       "xyz",
     ]);
     protectedContext.set({ detail: "dynamic value xyz" });
@@ -144,8 +161,12 @@ test("request logs keep dynamic redaction values request-scoped without truncati
     configureLogging("info");
   }
 
-  const protectedEntry = entries.find((entry) => entry.request_id === "protected-request");
-  const independentEntry = entries.find((entry) => entry.request_id === "independent-request");
+  const protectedEntry = entries.find(
+    (entry) => entry.request_id === "protected-request",
+  );
+  const independentEntry = entries.find(
+    (entry) => entry.request_id === "independent-request",
+  );
   assert.equal(protectedEntry.detail, "dynamic value [REDACTED]");
   assert.equal(independentEntry.detail, "dynamic value xyz");
 });

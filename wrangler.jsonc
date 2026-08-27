@@ -1,80 +1,70 @@
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "cody",
-	"main": "src/worker.ts",
-	"compatibility_date": "2026-07-24",
-	"compatibility_flags": [
-		"nodejs_compat"
-	],
-	"workers_dev": true,
-	"observability": {
-		"enabled": true,
-		"logs": {
-			"head_sampling_rate": 0.1,
-			"persist": true
-		},
-		"traces": {
-			"enabled": true,
-			"head_sampling_rate": 0.01
-		}
-	},
-	"vars": {
-		"CONFIG_KEY": "gateway-config",
-		"CONFIG_CACHE_TTL_SECONDS": "10",
-		"MODELS_CACHE_TTL_SECONDS": "30",
-		"LOG_LEVEL": "info"
-	},
-	"kv_namespaces": [
-		{
-			"binding": "CODY_CONFIG_KV",
-			// Replace this placeholder with the ID from `wrangler kv namespace create CODY_CONFIG_KV`.
-			"id": "8c9a59105a1e4c4f918e33a93323c533"
-		}
-	],
-	"durable_objects": {
-		"bindings": [
-			{
-				"name": "HEALTH",
-				"class_name": "ServiceHealth"
-			},
-			{
-				"name": "SESSION_AFFINITY",
-				"class_name": "SessionAffinity"
-			},
-			{
-				"name": "SESSION_AFFINITY_INDEX",
-				"class_name": "SessionAffinityIndex"
-			},
-			{
-				"name": "RESPONSES_WEBSOCKET",
-				"class_name": "ResponsesWebSocketProxy"
-			}
-		]
-	},
-	"migrations": [
-		{
-			"tag": "v1",
-			"new_sqlite_classes": [
-				"ServiceHealth"
-			]
-		},
-		{
-			"tag": "v2",
-			"new_sqlite_classes": [
-				"SessionAffinity"
-			]
-		},
-		{
-			"tag": "v3",
-			"new_sqlite_classes": [
-				"ResponsesWebSocketProxy"
-			]
-		},
-		{
-			"tag": "v4",
-			"new_sqlite_classes": [
-				"SessionAffinityIndex"
-			]
-		}
-	]
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cody",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "head_sampling_rate": 0.1,
+      "persist": true,
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.01,
+    },
+  },
+  "vars": {
+    "CONFIG_KEY": "gateway-config",
+    "CONFIG_CACHE_TTL_SECONDS": "10",
+    "MODELS_CACHE_TTL_SECONDS": "30",
+    "LOG_LEVEL": "info",
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CODY_CONFIG_KV",
+      // Replace this placeholder with the ID from `wrangler kv namespace create CODY_CONFIG_KV`.
+      "id": "8c9a59105a1e4c4f918e33a93323c533",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "HEALTH",
+        "class_name": "ServiceHealth",
+      },
+      {
+        "name": "SESSION_AFFINITY",
+        "class_name": "SessionAffinity",
+      },
+      {
+        "name": "SESSION_AFFINITY_INDEX",
+        "class_name": "SessionAffinityIndex",
+      },
+      {
+        "name": "RESPONSES_WEBSOCKET",
+        "class_name": "ResponsesWebSocketProxy",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ServiceHealth"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["SessionAffinity"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["ResponsesWebSocketProxy"],
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["SessionAffinityIndex"],
+    },
+  ],
 }

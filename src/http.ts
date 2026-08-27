@@ -1,4 +1,9 @@
 import type { ClientApiKeyConfig, ServiceConfig } from "./types.ts";
+import {
+  isAnthropicProtocol,
+  requestProtocol,
+  type ApiProtocol,
+} from "./protocol.ts";
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -36,14 +41,16 @@ const SENSITIVE_REQUEST_HEADERS = new Set([
 
 export function shouldStripRequestHeader(name: string): boolean {
   const lowerName = name.toLowerCase();
-  return HOP_BY_HOP_HEADERS.has(lowerName) ||
+  return (
+    HOP_BY_HOP_HEADERS.has(lowerName) ||
     SENSITIVE_REQUEST_HEADERS.has(lowerName) ||
     lowerName.startsWith("x-cody-") ||
     lowerName.startsWith("x-forwarded-") ||
     lowerName.startsWith("x-real-") ||
     lowerName.startsWith("x-envoy-") ||
     lowerName.startsWith("cf-") ||
-    lowerName.startsWith("proxy-");
+    lowerName.startsWith("proxy-")
+  );
 }
 
 export function forwardableWebSocketHeaders(request: Request): Headers {
@@ -59,10 +66,31 @@ export function forwardableWebSocketHeaders(request: Request): Headers {
   return headers;
 }
 
-export function jsonResponse(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {
+export function jsonResponse(
+  value: unknown,
+  status = 200,
+  extraHeaders?: HeadersInit,
+): Response {
   const headers = new Headers(extraHeaders);
   headers.set("content-type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(value), { status, headers });
+}
+
+export function anthropicError(
+  status: number,
+  message: string,
+  type = "invalid_request_error",
+): Response {
+  return jsonResponse(
+    {
+      type: "error",
+      error: {
+        type,
+        message,
+      },
+    },
+    status,
+  );
 }
 
 export function openAiError(
@@ -84,17 +112,48 @@ export function openAiError(
   );
 }
 
+export function apiError(
+  protocol: ApiProtocol,
+  status: number,
+  message: string,
+  type = "invalid_request_error",
+  code?: string,
+): Response {
+  const normalizedType =
+    isAnthropicProtocol(protocol) &&
+    status === 401 &&
+    type === "invalid_request_error"
+      ? "authentication_error"
+      : type;
+  return isAnthropicProtocol(protocol)
+    ? anthropicError(status, message, normalizedType)
+    : openAiError(status, message, normalizedType, code);
+}
+
 export function bearerToken(request: Request): string | undefined {
   const value = request.headers.get("authorization");
   const match = value?.match(/^Bearer\s+(.+)$/i);
   return match?.[1].trim() || undefined;
 }
 
+export function requestCredentialTokens(request: Request): string[] {
+  const tokens: string[] = [];
+  const bearer = bearerToken(request);
+  if (bearer) {
+    tokens.push(bearer);
+  }
+  const apiKey = request.headers.get("x-api-key");
+  if (apiKey && apiKey.trim() !== "") {
+    tokens.push(apiKey.trim());
+  }
+  return tokens;
+}
+
 export function findClientApiKey(
   request: Request,
   entries: ClientApiKeyConfig[],
 ): Promise<ClientApiKeyConfig | undefined> {
-  return findClientApiKeyByToken(bearerToken(request), entries);
+  return findClientApiKeyByToken(requestCredentialTokens(request), entries);
 }
 
 async function digestSecret(value: string): Promise<ArrayBuffer> {
@@ -129,7 +188,9 @@ interface TimingSafeSubtleCrypto extends SubtleCrypto {
   ): boolean;
 }
 
-function hasTimingSafeEqual(value: SubtleCrypto): value is TimingSafeSubtleCrypto {
+function hasTimingSafeEqual(
+  value: SubtleCrypto,
+): value is TimingSafeSubtleCrypto {
   return typeof Reflect.get(value, "timingSafeEqual") === "function";
 }
 
@@ -151,17 +212,20 @@ function equalDigests(left: ArrayBuffer, right: ArrayBuffer): boolean {
 }
 
 async function findClientApiKeyByToken(
-  token: string | undefined,
+  tokens: string[],
   entries: ClientApiKeyConfig[],
 ): Promise<ClientApiKeyConfig | undefined> {
-  if (!token) {
+  if (tokens.length === 0) {
     return undefined;
   }
-  const providedDigest = await digestSecret(token);
+  const providedDigests = await Promise.all(tokens.map(digestSecret));
   let matched: ClientApiKeyConfig | undefined;
   for (const entry of entries) {
     const expectedDigest = await digestSecret(entry.api_key);
-    if (equalDigests(providedDigest, expectedDigest) && matched === undefined) {
+    const digestMatches = providedDigests.some((providedDigest) =>
+      equalDigests(providedDigest, expectedDigest),
+    );
+    if (digestMatches && matched === undefined) {
       matched = entry;
     }
   }
@@ -186,19 +250,51 @@ export async function findClientApiKeyByDigest(
   return matched;
 }
 
-export function upstreamUrl(service: ServiceConfig, path: string, search = ""): string {
+export function upstreamUrl(
+  service: ServiceConfig,
+  path: string,
+  search = "",
+): string {
   const base = service.base_url.replace(/\/+$/, "");
   const suffix = path.replace(/^\/+/, "");
   return `${base}/${suffix}${search}`;
 }
 
-export function forwardRequestHeaders(request: Request, serviceApiKey: string): Headers {
+export function forwardRequestHeaders(
+  request: Request,
+  serviceApiKey: string,
+): Headers {
   const headers = new Headers();
   request.headers.forEach((value, name) => {
     if (!shouldStripRequestHeader(name)) {
       headers.set(name, value);
     }
   });
+  return forwardCredentialHeaders(
+    headers,
+    request,
+    serviceApiKey,
+    requestProtocol(request),
+  );
+}
+
+function forwardCredentialHeaders(
+  headers: Headers,
+  request: Request,
+  serviceApiKey: string,
+  protocol: "openai" | "anthropic",
+): Headers {
+  if (protocol === "anthropic") {
+    for (const name of ["authorization", "x-api-key"]) {
+      if (request.headers.has(name)) {
+        headers.set(
+          name,
+          name === "authorization" ? `Bearer ${serviceApiKey}` : serviceApiKey,
+        );
+      }
+    }
+    return headers;
+  }
   headers.set("authorization", `Bearer ${serviceApiKey}`);
   return headers;
 }

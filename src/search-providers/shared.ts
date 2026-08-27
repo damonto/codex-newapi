@@ -16,7 +16,9 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function nonBlankString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+  return typeof value === "string" && value.trim() !== ""
+    ? value.trim()
+    : undefined;
 }
 
 export function dateBeforeDays(days: number): string {
@@ -33,7 +35,9 @@ export function normalizeProviderResults(
   snippetFor: (result: Record<string, unknown>) => string,
 ): NormalizedSearchResult[] {
   if (!isRecord(body) || !Array.isArray(body.results)) {
-    throw new ProviderProtocolError("web search provider response must contain a results array");
+    throw new ProviderProtocolError(
+      "web search provider response must contain a results array",
+    );
   }
   return body.results.flatMap((value) => {
     if (!isRecord(value)) {
@@ -49,14 +53,19 @@ export function normalizeProviderResults(
     } catch {
       return [];
     }
-    if ((parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") ||
-      parsedUrl.username || parsedUrl.password) {
+    if (
+      (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") ||
+      parsedUrl.username ||
+      parsedUrl.password
+    ) {
       return [];
     }
-    return [{
-      title: (nonBlankString(value.title) ?? url).slice(0, MAX_TITLE_CHARS),
-      url,
-      snippet: snippetFor(value).slice(0, MAX_SNIPPET_CHARS),
-    }];
+    return [
+      {
+        title: (nonBlankString(value.title) ?? url).slice(0, MAX_TITLE_CHARS),
+        url,
+        snippet: snippetFor(value).slice(0, MAX_SNIPPET_CHARS),
+      },
+    ];
   });
 }

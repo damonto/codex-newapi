@@ -8,7 +8,7 @@ export async function mapWithConcurrency<T, Result>(
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
     throw new RangeError("concurrency must be a positive safe integer");
   }
-  const results = new Array<Result>(items.length);
+  const results: Result[] = [];
   let nextIndex = 0;
   const workers = Array.from(
     { length: Math.min(concurrency, items.length) },

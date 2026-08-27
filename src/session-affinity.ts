@@ -51,7 +51,8 @@ function validRecord(value: unknown): value is SessionAffinityRecord {
     return false;
   }
   const record = value as Partial<SessionAffinityRecord>;
-  return typeof record.service_id === "string" &&
+  return (
+    typeof record.service_id === "string" &&
     record.service_id.trim() !== "" &&
     typeof record.key_id === "string" &&
     record.key_id.trim() !== "" &&
@@ -70,7 +71,8 @@ function validRecord(value: unknown): value is SessionAffinityRecord {
     typeof record.session_id === "string" &&
     record.session_id.length > 0 &&
     typeof record.index_registered === "boolean" &&
-    validGeneration(record.generation);
+    validGeneration(record.generation)
+  );
 }
 
 function nextBindingGeneration(
@@ -105,70 +107,79 @@ export class SessionAffinity extends DurableObject<Env> {
     registration: SessionAffinityRegistration,
   ): Promise<SessionAffinityResolution | undefined> {
     const now = Date.now();
-    const result: AffinityTransactionResult = await this.ctx.storage.transaction(async (transaction) => {
-      const rawStored = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
-      const current = validRecord(rawStored) ? rawStored : undefined;
-      const stored = current &&
+    const result: AffinityTransactionResult =
+      await this.ctx.storage.transaction(async (transaction) => {
+        const rawStored = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
+        const current = validRecord(rawStored) ? rawStored : undefined;
+        const stored =
+          current &&
           current.registry_name === registration.registry_name &&
           current.session_digest === registration.session_digest &&
           current.session_id === registration.session_id
-        ? current
-        : undefined;
-      const storedActive = stored !== undefined &&
-        stored.updated_at + SESSION_AFFINITY_TTL_MS > now;
-      if (storedActive) {
-        const decision = resolveStoredAffinity(stored, candidates, preferred);
-        if (!decision.selection) {
-          await transaction.delete(AFFINITY_STORAGE_KEY);
-          return { resolution: undefined, obsolete: stored };
-        }
-        const rotateBinding = decision.status === "rebound";
-        const next: SessionAffinityRecord = rotateBinding
-          ? {
-            ...stored,
-            ...decision.selection,
-            updated_at: now,
-            binding_id: crypto.randomUUID(),
-            created_at: now,
-            generation: nextBindingGeneration(stored),
-            index_registered: false,
+            ? current
+            : undefined;
+        const storedActive =
+          stored !== undefined &&
+          stored.updated_at + SESSION_AFFINITY_TTL_MS > now;
+        if (storedActive) {
+          const decision = resolveStoredAffinity(stored, candidates, preferred);
+          if (!decision.selection) {
+            await transaction.delete(AFFINITY_STORAGE_KEY);
+            return { resolution: undefined, obsolete: stored };
           }
-          : {
-            ...stored,
-            ...decision.selection,
-            updated_at: now,
+          const rotateBinding = decision.status === "rebound";
+          const next: SessionAffinityRecord = rotateBinding
+            ? {
+                ...stored,
+                ...decision.selection,
+                updated_at: now,
+                binding_id: crypto.randomUUID(),
+                created_at: now,
+                generation: nextBindingGeneration(stored),
+                index_registered: false,
+              }
+            : {
+                ...stored,
+                ...decision.selection,
+                updated_at: now,
+              };
+          await transaction.put(AFFINITY_STORAGE_KEY, next);
+          return {
+            resolution: { ...next, status: decision.status },
+            ...(rotateBinding ? { obsolete: stored } : {}),
           };
+        }
+
+        const selected = affinitySelectionIsHighestPriority(
+          preferred,
+          candidates,
+        )
+          ? preferred
+          : chooseAffinityCandidate(candidates);
+        if (!selected) {
+          await transaction.delete(AFFINITY_STORAGE_KEY);
+          return {
+            resolution: undefined,
+            ...(current ? { obsolete: current } : {}),
+          };
+        }
+        const next: SessionAffinityRecord = {
+          ...selected,
+          updated_at: now,
+          binding_id: crypto.randomUUID(),
+          created_at: now,
+          generation: nextBindingGeneration(current),
+          registry_name: registration.registry_name,
+          session_digest: registration.session_digest,
+          session_id: registration.session_id,
+          index_registered: false,
+        };
         await transaction.put(AFFINITY_STORAGE_KEY, next);
         return {
-          resolution: { ...next, status: decision.status },
-          ...(rotateBinding ? { obsolete: stored } : {}),
+          resolution: { ...next, status: "created" as const },
+          ...(current ? { obsolete: current } : {}),
         };
-      }
-
-      const selected = affinitySelectionIsHighestPriority(preferred, candidates)
-        ? preferred
-        : chooseAffinityCandidate(candidates);
-      if (!selected) {
-        await transaction.delete(AFFINITY_STORAGE_KEY);
-        return { resolution: undefined, ...(current ? { obsolete: current } : {}) };
-      }
-      const next: SessionAffinityRecord = {
-        ...selected,
-        updated_at: now,
-        binding_id: crypto.randomUUID(),
-        created_at: now,
-        generation: nextBindingGeneration(current),
-        registry_name: registration.registry_name,
-        session_digest: registration.session_digest,
-        session_id: registration.session_id,
-        index_registered: false,
-      };
-      await transaction.put(AFFINITY_STORAGE_KEY, next);
-      return {
-        resolution: { ...next, status: "created" as const },
-        ...(current ? { obsolete: current } : {}),
-      };
-    });
+      });
 
     try {
       if (result.resolution) {
@@ -206,7 +217,9 @@ export class SessionAffinity extends DurableObject<Env> {
   private async ensureIndexed(record: SessionAffinityRecord): Promise<void> {
     let candidate = record;
     try {
-      const index = this.env.SESSION_AFFINITY_INDEX.getByName(record.registry_name);
+      const index = this.env.SESSION_AFFINITY_INDEX.getByName(
+        record.registry_name,
+      );
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const indexed = await index.register(indexEntry(candidate));
         if (
@@ -215,25 +228,28 @@ export class SessionAffinity extends DurableObject<Env> {
           indexed.created_at === candidate.created_at &&
           indexed.generation === candidate.generation
         ) {
-          const retained = await this.ctx.storage.transaction(async (transaction) => {
-            const rawCurrent = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
-            const current = validRecord(rawCurrent) ? rawCurrent : undefined;
-            if (
-              current &&
-              current.binding_id === candidate.binding_id &&
-              current.registry_name === candidate.registry_name &&
-              current.session_digest === candidate.session_digest &&
-              current.session_id === candidate.session_id &&
-              current.generation === candidate.generation
-            ) {
-              await transaction.put(AFFINITY_STORAGE_KEY, {
-                ...current,
-                index_registered: true,
-              });
-              return true;
-            }
-            return false;
-          });
+          const retained = await this.ctx.storage.transaction(
+            async (transaction) => {
+              const rawCurrent =
+                await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
+              const current = validRecord(rawCurrent) ? rawCurrent : undefined;
+              if (
+                current &&
+                current.binding_id === candidate.binding_id &&
+                current.registry_name === candidate.registry_name &&
+                current.session_digest === candidate.session_digest &&
+                current.session_id === candidate.session_id &&
+                current.generation === candidate.generation
+              ) {
+                await transaction.put(AFFINITY_STORAGE_KEY, {
+                  ...current,
+                  index_registered: true,
+                });
+                return true;
+              }
+              return false;
+            },
+          );
           if (!retained) {
             await index.remove(
               candidate.session_digest,
@@ -247,33 +263,33 @@ export class SessionAffinity extends DurableObject<Env> {
         if (indexed.generation < candidate.generation) {
           return;
         }
-        const replacement = await this.ctx.storage.transaction(async (transaction) => {
-          const rawCurrent = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
-          const current = validRecord(rawCurrent) ? rawCurrent : undefined;
-          if (
-            !current ||
-            current.binding_id !== candidate.binding_id ||
-            current.registry_name !== candidate.registry_name ||
-            current.session_digest !== candidate.session_digest ||
-            current.session_id !== candidate.session_id
-          ) {
-            return undefined;
-          }
-          const generation = Math.max(
-            current.generation,
-            indexed.generation,
-          );
-          if (generation >= Number.MAX_SAFE_INTEGER) {
-            return undefined;
-          }
-          const next: SessionAffinityRecord = {
-            ...current,
-            generation: generation + 1,
-            index_registered: false,
-          };
-          await transaction.put(AFFINITY_STORAGE_KEY, next);
-          return next;
-        });
+        const replacement = await this.ctx.storage.transaction(
+          async (transaction) => {
+            const rawCurrent =
+              await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
+            const current = validRecord(rawCurrent) ? rawCurrent : undefined;
+            if (
+              !current ||
+              current.binding_id !== candidate.binding_id ||
+              current.registry_name !== candidate.registry_name ||
+              current.session_digest !== candidate.session_digest ||
+              current.session_id !== candidate.session_id
+            ) {
+              return undefined;
+            }
+            const generation = Math.max(current.generation, indexed.generation);
+            if (generation >= Number.MAX_SAFE_INTEGER) {
+              return undefined;
+            }
+            const next: SessionAffinityRecord = {
+              ...current,
+              generation: generation + 1,
+              index_registered: false,
+            };
+            await transaction.put(AFFINITY_STORAGE_KEY, next);
+            return next;
+          },
+        );
         if (!replacement) {
           await index.remove(
             candidate.session_digest,
@@ -297,11 +313,9 @@ export class SessionAffinity extends DurableObject<Env> {
 
   private async unregister(record: SessionAffinityRecord): Promise<void> {
     try {
-      await this.env.SESSION_AFFINITY_INDEX.getByName(record.registry_name).remove(
-        record.session_digest,
-        record.binding_id,
-        record.generation,
-      );
+      await this.env.SESSION_AFFINITY_INDEX.getByName(
+        record.registry_name,
+      ).remove(record.session_digest, record.binding_id, record.generation);
     } catch (error) {
       logWarn("affinity.index_remove.failed", {
         session_digest: record.session_digest,
@@ -312,7 +326,10 @@ export class SessionAffinity extends DurableObject<Env> {
 
   async getStatus(): Promise<SessionAffinityRecord | null> {
     const stored = await this.ctx.storage.get<unknown>(AFFINITY_STORAGE_KEY);
-    if (!validRecord(stored) || stored.updated_at + SESSION_AFFINITY_TTL_MS <= Date.now()) {
+    if (
+      !validRecord(stored) ||
+      stored.updated_at + SESSION_AFFINITY_TTL_MS <= Date.now()
+    ) {
       return null;
     }
     return stored;
