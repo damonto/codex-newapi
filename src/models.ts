@@ -398,14 +398,7 @@ export function isCodexUserAgent(request: Request): boolean {
 }
 
 export function isClaudeUserAgent(request: Request): boolean {
-  const userAgent = request.headers.get("user-agent")?.toLowerCase() ?? "";
-  return (
-    userAgent.includes("claude-cli") ||
-    userAgent.includes("claude-desktop") ||
-    userAgent.includes("claude-code") ||
-    userAgent.includes("claude-agent-sdk") ||
-    userAgent.includes("anthropic-sdk")
-  );
+  return request.headers.get("user-agent")?.toLowerCase().includes("claude") ?? false;
 }
 
 export function modelsFormatFor(request: Request): ModelsFormat {
@@ -448,9 +441,8 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
   const maxInputTokens =
     typeof catalog?.max_context_window === "number"
       ? catalog.max_context_window
-      : typeof catalog?.context_window === "number"
-        ? catalog.context_window
-        : ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS;
+      : ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS;
+
   const displayName =
     typeof catalog?.display_name === "string" ? catalog.display_name : id;
   const effortCapability = {
