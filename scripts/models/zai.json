@@ -2,8 +2,8 @@
 	"models": [
 		{
 			"slug": "glm-5.3",
-			"display_name": "glm-5.3",
-			"description": "Z.ai's latest flagship model",
+			"display_name": "GLM-5.3",
+			"description": "Flagship model, excels at coding and long-horizon tasks",
 			"default_reasoning_level": "max",
 			"supported_reasoning_levels": [
 				{
@@ -22,7 +22,7 @@
 			"shell_type": "shell_command",
 			"visibility": "list",
 			"supported_in_api": true,
-			"priority": 0,
+			"priority": 301,
 			"base_instructions": "",
 			"supports_reasoning_summaries": true,
 			"default_reasoning_summary": "none",
@@ -42,15 +42,28 @@
 			]
 		},
 		{
-			"slug": "glm-5-turbo",
-			"display_name": "glm-5-turbo",
-			"description": "Agent-optimized model",
+			"slug": "glm-5.3-flash",
+			"display_name": "GLM-5.3-Flash",
+			"description": "Lightweight flagship model, premium quality, instant response.",
 			"default_reasoning_level": "max",
-			"supported_reasoning_levels": [],
+			"supported_reasoning_levels": [
+				{
+					"effort": "low",
+					"description": "Light reasoning"
+				},
+				{
+					"effort": "high",
+					"description": "Enhanced reasoning"
+				},
+				{
+					"effort": "max",
+					"description": "Deep reasoning"
+				}
+			],
 			"shell_type": "shell_command",
 			"visibility": "list",
 			"supported_in_api": true,
-			"priority": 1,
+			"priority": 302,
 			"base_instructions": "",
 			"supports_reasoning_summaries": true,
 			"default_reasoning_summary": "none",
@@ -60,8 +73,8 @@
 				"mode": "bytes",
 				"limit": 10000
 			},
-			"context_window": 204800,
-			"max_context_window": 204800,
+			"context_window": 1048576,
+			"max_context_window": 1048576,
 			"effective_context_window_percent": 95,
 			"supports_parallel_tool_calls": true,
 			"experimental_supported_tools": [],
