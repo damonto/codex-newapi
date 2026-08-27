@@ -24,7 +24,7 @@ This repository contains a TypeScript Cloudflare Worker that serves as an AI API
 
 ## Request and routing behavior
 
-- Preserve request bodies, query strings, headers, and upstream responses whenever possible. Only replace the gateway Authorization header, rewrite a model field when a route is configured, and remove headers that become invalid after rewriting.
+- Preserve request bodies, query strings, headers, and upstream responses whenever possible. Only replace the gateway Authorization header, rewrite a model field when a route is configured, inject the Claude Code identity when a service sets `inject_claude_code_identity`, and remove headers that become invalid after rewriting.
 - Select services by descending priority, then configuration order, while skipping services in cooldown.
 - Within the selected service, use the highest-priority enabled key and break ties by configuration order. Key switching is configuration-driven, not automatic.
 - Apply only the selected service's configured retry policy. Retries resend the same request with the same selected key; they never switch keys or services, and the final upstream response is returned unchanged.

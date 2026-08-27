@@ -125,14 +125,20 @@ test("parseConfig accepts explicit service capability flags", () => {
   const input = validConfig();
   input.services[0].supports_websocket = true;
   input.services[0].supports_web_search = false;
+  input.services[0].inject_claude_code_identity = true;
 
   const config = parseConfig(input);
   assert.equal(config.services[0].supports_websocket, true);
   assert.equal(config.services[0].supports_web_search, false);
+  assert.equal(config.services[0].inject_claude_code_identity, true);
 });
 
 test("parseConfig rejects non-boolean service capability flags", () => {
-  for (const field of ["supports_websocket", "supports_web_search"]) {
+  for (const field of [
+    "supports_websocket",
+    "supports_web_search",
+    "inject_claude_code_identity",
+  ]) {
     const input = validConfig();
     input.services[0][field] = "true";
     assert.throws(

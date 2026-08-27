@@ -35,6 +35,7 @@ const SERVICE_FIELDS = new Set([
   "models",
   "supports_websocket",
   "supports_web_search",
+  "inject_claude_code_identity",
   "retry",
 ]);
 const SERVICE_API_KEY_FIELDS = new Set([
@@ -211,9 +212,9 @@ function parseWebSearch(value: unknown): WebSearchConfig {
     value.base_url === undefined
       ? provider.defaultBaseUrl
       : validateBaseUrl(
-          requiredString(value.base_url, `${path}.base_url`),
-          `${path}.base_url`,
-        );
+        requiredString(value.base_url, `${path}.base_url`),
+        `${path}.base_url`,
+      );
   const apiKey = requiredString(value.api_key, `${path}.api_key`);
   const maxResults =
     value.max_results === undefined
@@ -308,6 +309,10 @@ function parseService(value: unknown, index: number): ServiceConfig {
     supports_web_search: optionalBoolean(
       value.supports_web_search,
       `${path}.supports_web_search`,
+    ),
+    inject_claude_code_identity: optionalBoolean(
+      value.inject_claude_code_identity,
+      `${path}.inject_claude_code_identity`,
     ),
     ...(retry === undefined ? {} : { retry }),
   };

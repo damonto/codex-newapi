@@ -19,6 +19,7 @@ export interface ServiceConfig {
   models: string[];
   supports_websocket: boolean;
   supports_web_search: boolean;
+  inject_claude_code_identity?: boolean;
   retry?: ServiceRetryConfig;
 }
 

@@ -1,3 +1,9 @@
+import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
+import {
+  applyClaudeCodeIdentityHeaders,
+  injectClaudeCodeIdentity,
+} from "./claude-code-identity.ts";
+import { upstreamApiKeyValues } from "./credentials.ts";
 import {
   isProtocolHealthFailureStatus,
   isProtocolKeyHealthFailureStatus,
@@ -7,16 +13,14 @@ import {
   scheduleHealthUpdate,
   type HealthExecutionContext,
 } from "./health.ts";
-import { forwardRequestHeaders, apiError, upstreamUrl } from "./http.ts";
-import { requestProtocol } from "./protocol.ts";
-import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
-import { upstreamApiKeyValues } from "./credentials.ts";
+import { apiError, forwardRequestHeaders, upstreamUrl } from "./http.ts";
 import {
   bounded,
   elapsedMs,
   errorMessage,
   type RequestLogContext,
 } from "./log.ts";
+import { requestProtocol } from "./protocol.ts";
 import {
   resolveModelRoute,
   selectAvailableServiceWithDetails,
@@ -321,9 +325,9 @@ export async function handleInference(
     ...(selection.affinity ? { affinity: selection.affinity } : {}),
     ...(target
       ? {
-          selected_service: target.service.id,
-          selected_key_id: target.key.id,
-        }
+        selected_service: target.service.id,
+        selected_key_id: target.key.id,
+      }
       : {}),
   };
   if (
@@ -352,7 +356,15 @@ export async function handleInference(
   const headers = forwardRequestHeaders(request, selectedKey.api_key);
   headers.delete("content-length");
   const modelRewritten = payload.model !== route.upstreamModel;
-  if (modelRewritten) {
+  const identityInjected =
+    protocol === "anthropic" &&
+    upstreamPath === "messages" &&
+    service.inject_claude_code_identity === true &&
+    injectClaudeCodeIdentity(payload);
+  if (identityInjected) {
+    applyClaudeCodeIdentityHeaders(headers);
+  }
+  if (modelRewritten || identityInjected) {
     headers.delete("content-md5");
     headers.delete("digest");
     headers.delete("content-digest");
@@ -362,8 +374,12 @@ export async function handleInference(
     headers.set("content-type", "application/json");
   }
   let body: BodyInit = rawBody;
-  if (modelRewritten) {
+  if (modelRewritten && !identityInjected) {
     body = rewriteModel(originalText, payload, route.upstreamModel);
+  } else if (identityInjected) {
+    body = JSON.stringify(
+      modelRewritten ? { ...payload, model: route.upstreamModel } : payload,
+    );
   }
   const incomingUrl = new URL(request.url);
   const startedAt = performance.now();
