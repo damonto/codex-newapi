@@ -456,8 +456,11 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
 
   return {
     id,
+    name: id,
     type: "model",
     display_name: displayName,
+    supports1m: maxInputTokens >= 100_000,
+    prefer1m: maxInputTokens >= 100_000,
     created_at: ANTHROPIC_MODEL_CREATED_AT,
     max_input_tokens: maxInputTokens,
     max_tokens: ANTHROPIC_MODEL_MAX_TOKENS,
