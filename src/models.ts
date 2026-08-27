@@ -29,6 +29,7 @@ import {
 import codexCatalog from "./models.json" with { type: "json" };
 import {
   allowedServiceCandidates,
+  modelRoutesForClient,
   selectAvailableCatalogTargetsWithDetails,
   type RoutedService,
   type ServiceTarget,
@@ -403,6 +404,7 @@ async function modelsCacheKey(
     url.pathname === "/models" || url.pathname === "/v1/models" ? "models" : url.pathname,
     url.search,
     serviceIds,
+    client.id,
     requestHeaderVary(request),
   ].join("\u0000");
   return hashText(vary);
@@ -447,6 +449,7 @@ async function collectModels(
   request: Request,
   env: Env,
   config: GatewayConfig,
+  client: ClientApiKeyConfig,
   configuredTargets: RoutedService[],
   codexFormat: boolean,
   requestId: string,
@@ -525,12 +528,13 @@ async function collectModels(
     );
   }
 
-  const standardModels = aggregateStandardModels(results, config.model_routes);
+  const modelRoutes = modelRoutesForClient(config, client);
+  const standardModels = aggregateStandardModels(results, modelRoutes);
   const payload = !codexFormat
     ? { object: "list", data: standardModels }
     : {
       models: aggregateCodexModels(
-        codexModelIds(standardModels, results, config.model_routes),
+        codexModelIds(standardModels, results, modelRoutes),
       ),
     };
   return {
@@ -579,6 +583,7 @@ export async function handleModels(
       request,
       env,
       config,
+      client,
       configuredTargets,
       codexFormat,
       requestId,

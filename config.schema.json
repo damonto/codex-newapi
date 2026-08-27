@@ -4,6 +4,36 @@
   "title": "Cody Gateway Configuration",
   "type": "object",
   "additionalProperties": false,
+  "$defs": {
+    "model_routes": {
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "services": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  },
   "required": [
     "services",
     "api_keys"
@@ -122,14 +152,22 @@
             "oneOf": [
               {
                 "properties": {
-                  "status_codes": { "minItems": 1 },
-                  "delays_ms": { "minItems": 1 }
+                  "status_codes": {
+                    "minItems": 1
+                  },
+                  "delays_ms": {
+                    "minItems": 1
+                  }
                 }
               },
               {
                 "properties": {
-                  "status_codes": { "maxItems": 0 },
-                  "delays_ms": { "maxItems": 0 }
+                  "status_codes": {
+                    "maxItems": 0
+                  },
+                  "delays_ms": {
+                    "maxItems": 0
+                  }
                 }
               }
             ]
@@ -166,46 +204,30 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "model_routes": {
+            "$ref": "#/$defs/model_routes"
           }
         }
       }
     },
     "model_routes": {
-      "type": "object",
-      "propertyNames": {
-        "minLength": 1
-      },
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "model"
-        ],
-        "properties": {
-          "model": {
-            "type": "string",
-            "minLength": 1
-          },
-          "services": {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        }
-      }
+      "$ref": "#/$defs/model_routes"
     },
     "web_search": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode"],
+      "required": [
+        "mode"
+      ],
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["proxy", "tavily", "exa"],
+          "enum": [
+            "proxy",
+            "tavily",
+            "exa"
+          ],
           "default": "proxy"
         },
         "base_url": {
@@ -226,30 +248,67 @@
       "allOf": [
         {
           "if": {
-            "properties": { "mode": { "const": "proxy" } },
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "const": "proxy"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
           "then": {
             "not": {
               "anyOf": [
-                { "required": ["base_url"] },
-                { "required": ["api_key"] },
-                { "required": ["max_results"] }
+                {
+                  "required": [
+                    "base_url"
+                  ]
+                },
+                {
+                  "required": [
+                    "api_key"
+                  ]
+                },
+                {
+                  "required": [
+                    "max_results"
+                  ]
+                }
               ]
             }
           }
         },
         {
           "if": {
-            "properties": { "mode": { "enum": ["tavily", "exa"] } },
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "enum": [
+                  "tavily",
+                  "exa"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
-          "then": { "required": ["api_key"] }
+          "then": {
+            "required": [
+              "api_key"
+            ]
+          }
         },
         {
           "if": {
-            "properties": { "mode": { "const": "tavily" } },
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "const": "tavily"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
           "then": {
             "properties": {
@@ -263,8 +322,14 @@
         },
         {
           "if": {
-            "properties": { "mode": { "const": "exa" } },
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "const": "exa"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
           "then": {
             "properties": {

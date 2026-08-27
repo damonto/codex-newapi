@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import {
   createExecutionContext,
   evictDurableObject,
@@ -7,6 +6,7 @@ import {
   runInDurableObject,
   waitOnExecutionContext,
 } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import {
   afterEach,
   beforeEach,
@@ -405,6 +405,44 @@ test("responses WebSocket rewrites the first model and proxies headers, text, bi
   const upstreamClosed = nextUpstreamClose(upstream);
   socket.close(1000, "client done");
   expect((await upstreamClosed).code).toBe(1000);
+});
+
+test("responses WebSocket applies per-client model routes over the global routes", async () => {
+  const config = gatewayConfig();
+  config.api_keys = [
+    config.api_keys[0],
+    {
+      id: "per-key-client",
+      api_key: "per-key-client-secret",
+      services: ["primary"],
+      model_routes: {
+        "client-model": { model: "other-model", services: ["primary"] },
+      },
+    },
+  ];
+  await putConfig(config);
+  const upstream = upstreamPair();
+  let capturedRequest: Request | undefined;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedRequest = input instanceof Request ? input : new Request(input, init);
+    return openUpstream(upstream);
+  }));
+
+  const { socket } = await openGatewaySocket("/v1/responses", {
+    authorization: "Bearer per-key-client-secret",
+  });
+  const upstreamFirstMessage = nextUpstreamMessage(upstream);
+  socket.send(JSON.stringify({ type: "response.create", model: "client-model" }));
+  expect(JSON.parse(await upstreamFirstMessage as string)).toMatchObject({
+    type: "response.create",
+    model: "other-model",
+  });
+  expect(capturedRequest?.url).toBe("https://primary.example/v1/responses");
+  expect(capturedRequest?.headers.get("authorization")).toBe("Bearer primary-secret");
+
+  const upstreamClosed = nextUpstreamClose(upstream);
+  socket.close(1000, "done");
+  await upstreamClosed;
 });
 
 test("responses WebSocket skips higher-priority services without WebSocket support", async () => {

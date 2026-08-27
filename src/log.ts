@@ -15,9 +15,14 @@ const LOG_LEVEL_ORDER: Record<EmittedLogLevel, number> = {
 };
 const REDACTED = "[REDACTED]";
 const SENSITIVE_FIELD = /(?:^|[_-])(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|x-api-key|x-auth-token|x-access-token|x-client-key|token|access[-_]?token|refresh[-_]?token|secret|password|credential|credentials)(?:$|[_-])/i;
+
+// Redaction patterns are applied in order of specificity: structured context
+// (JSON key-value, URL query, auth header) first, then bare key patterns as
+// a catch-all. The patterns intentionally overlap for defense-in-depth.
 const BEARER_PATTERN = /\b(Bearer|Basic)\s+[^\s,;]+/gi;
 const QUERY_SECRET_PATTERN = /([?&](?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization)\s*=)[^&#\s]+/gi;
 const ASSIGNMENT_SECRET_PATTERN = /((?:["']?(?:api[-_]?key|token|access[-_]?token|refresh[-_]?token|secret|password|authorization|credential)s?["']?)\s*[:=]\s*["']?)[^"'\s,}&]+/gi;
+// Catch-all for bare OpenAI-format keys not already redacted by the patterns above.
 const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9._-]{7,}\b/g;
 
 // This isolate-local setting is refreshed from env at the start of every request.

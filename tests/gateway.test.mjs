@@ -3,15 +3,15 @@ import test from "node:test";
 
 import {
   resolveStoredAffinity,
-  sessionAffinityIdentity,
   SESSION_AFFINITY_TTL_MS,
+  sessionAffinityIdentity,
 } from "../src/affinity.ts";
 import { clearConfigCacheForTests } from "../src/config.ts";
 import {
   FAILURE_THRESHOLD,
   keyIsAvailable,
-  serviceIsAvailable,
   ServiceHealthState,
+  serviceIsAvailable,
 } from "../src/health.ts";
 import worker from "../src/index.ts";
 import { clearModelsCacheForTests } from "../src/models.ts";
@@ -43,7 +43,9 @@ function gatewayConfig() {
         models: ["grok-4.5", "review-model"],
       },
     ],
-    api_keys: [{ id: "gateway-client", api_key: "client-key", services: ["primary"] }],
+    api_keys: [
+      { id: "gateway-client", api_key: "client-key", services: ["primary"] },
+    ],
     model_routes: {
       "gpt-5.6-sol": { model: "grok-4.5" },
       "codex-auto-review": { model: "review-model", services: ["primary"] },
@@ -62,13 +64,19 @@ function testEnv(config) {
     return sessionIndexes.get(name);
   };
   const removeIndexEntry = (record) => {
-    if (!record?.registry_name || !record.session_digest || !record.binding_id) {
+    if (
+      !record?.registry_name ||
+      !record.session_digest ||
+      !record.binding_id
+    ) {
       return false;
     }
     const index = sessionIndex(record.registry_name);
     const current = index.get(record.session_digest);
-    if (current?.binding_id !== record.binding_id ||
-      current.generation !== record.generation) {
+    if (
+      current?.binding_id !== record.binding_id ||
+      current.generation !== record.generation
+    ) {
       return false;
     }
     return index.delete(record.session_digest);
@@ -144,25 +152,32 @@ function testEnv(config) {
             index_registered: true,
           };
           affinities.set(name, next);
-          sessionIndex(registration.registry_name).set(registration.session_digest, {
-            session_digest: registration.session_digest,
-            session_id: registration.session_id,
-            binding_id: next.binding_id,
-            created_at: now,
-            generation: next.generation,
-          });
+          sessionIndex(registration.registry_name).set(
+            registration.session_digest,
+            {
+              session_digest: registration.session_digest,
+              session_id: registration.session_id,
+              binding_id: next.binding_id,
+              created_at: now,
+              generation: next.generation,
+            },
+          );
           return { ...next, status: "created" };
         },
         getStatus: async () => {
           const stored = affinities.get(name);
-          return stored && stored.updated_at + SESSION_AFFINITY_TTL_MS > Date.now()
+          return stored &&
+            stored.updated_at + SESSION_AFFINITY_TTL_MS > Date.now()
             ? stored
             : null;
         },
         clearIfBindingId: async (bindingId, generation) => {
           const stored = affinities.get(name);
-          if (!stored || stored.binding_id !== bindingId ||
-            stored.generation !== generation) {
+          if (
+            !stored ||
+            stored.binding_id !== bindingId ||
+            stored.generation !== generation
+          ) {
             return false;
           }
           affinities.delete(name);
@@ -170,10 +185,13 @@ function testEnv(config) {
         },
         clearManaged: async (registration) => {
           const stored = affinities.get(name);
-          if (!stored || stored.binding_id === undefined ||
+          if (
+            !stored ||
+            stored.binding_id === undefined ||
             stored.registry_name !== registration.registry_name ||
             stored.session_digest !== registration.session_digest ||
-            stored.session_id !== registration.session_id) {
+            stored.session_id !== registration.session_id
+          ) {
             return null;
           }
           affinities.delete(name);
@@ -189,10 +207,13 @@ function testEnv(config) {
         register: async (entry) => {
           const index = sessionIndex(name);
           const current = index.get(entry.session_digest);
-          if (current &&
+          if (
+            current &&
             (entry.generation < current.generation ||
               (entry.generation === current.generation &&
-                entry.binding_id !== current.binding_id))) return current;
+                entry.binding_id !== current.binding_id))
+          )
+            return current;
           index.set(entry.session_digest, { ...entry });
           const registered = index.get(entry.session_digest);
           if (!registered) {
@@ -205,13 +226,17 @@ function testEnv(config) {
         listPage: async (cursor, limit) => {
           const rows = [...sessionIndex(name).values()]
             .filter((entry) => cursor === null || entry.session_digest > cursor)
-            .sort((left, right) => left.session_digest.localeCompare(right.session_digest));
+            .sort((left, right) =>
+              left.session_digest.localeCompare(right.session_digest),
+            );
           const data = rows.slice(0, limit);
           let nextCursor = null;
           if (rows.length > limit) {
             const lastEntry = data[data.length - 1];
             if (!lastEntry) {
-              throw new Error("session affinity index page is unexpectedly empty");
+              throw new Error(
+                "session affinity index page is unexpectedly empty",
+              );
             }
             nextCursor = lastEntry.session_digest;
           }
@@ -223,8 +248,10 @@ function testEnv(config) {
         remove: async (sessionDigest, bindingId, generation) => {
           const index = sessionIndex(name);
           const current = index.get(sessionDigest);
-          if (current?.binding_id !== bindingId ||
-            current.generation !== generation) {
+          if (
+            current?.binding_id !== bindingId ||
+            current.generation !== generation
+          ) {
             return false;
           }
           return index.delete(sessionDigest);
@@ -247,9 +274,10 @@ async function captureLogs(run) {
   const entries = [];
   for (const level of ["error", "info", "log", "warn"]) {
     console[level] = (...args) => {
-      const entry = args.length === 1 && typeof args[0] === "object" && args[0] !== null
-        ? args[0]
-        : JSON.parse(args.map(String).join(" "));
+      const entry =
+        args.length === 1 && typeof args[0] === "object" && args[0] !== null
+          ? args[0]
+          : JSON.parse(args.map(String).join(" "));
       entries.push(entry);
       lines.push(JSON.stringify(entry));
     };
@@ -310,7 +338,11 @@ test("Worker maps the model, replaces authorization, and preserves the upstream 
           "content-type": "application/json",
           "content-md5": "stale-digest",
         },
-        body: JSON.stringify({ model: "gpt-5.6-sol", stream: true, input: "hello" }),
+        body: JSON.stringify({
+          model: "gpt-5.6-sol",
+          stream: true,
+          input: "hello",
+        }),
       }),
       testEnv(gatewayConfig()),
       {},
@@ -360,19 +392,22 @@ test("Worker forwards alpha search and responses compact aliases with response f
     const env = testEnv(gatewayConfig());
     for (const path of paths) {
       const response = await worker.fetch(
-        new Request(`https://gateway.example${path}?trace=${encodeURIComponent(path)}`, {
-          method: "POST",
-          headers: {
-            authorization: "Bearer client-key",
-            "content-type": "application/json",
-            "x-tenant": "tenant-a",
+        new Request(
+          `https://gateway.example${path}?trace=${encodeURIComponent(path)}`,
+          {
+            method: "POST",
+            headers: {
+              authorization: "Bearer client-key",
+              "content-type": "application/json",
+              "x-tenant": "tenant-a",
+            },
+            body: JSON.stringify({
+              model: "gpt-5.6-sol",
+              id: "search-session",
+              input: "hello",
+            }),
           },
-          body: JSON.stringify({
-            model: "gpt-5.6-sol",
-            id: "search-session",
-            input: "hello",
-          }),
-        }),
+        ),
         env,
         {},
       );
@@ -430,12 +465,14 @@ test("alpha search skips higher-priority services without web search support", a
   config.services.push({
     id: "search",
     base_url: "https://search.example/v1",
-    keys: [{
-      id: "search-key",
-      api_key: "search-upstream-key",
-      disabled: false,
-      priority: 100,
-    }],
+    keys: [
+      {
+        id: "search-key",
+        api_key: "search-upstream-key",
+        disabled: false,
+        priority: 100,
+      },
+    ],
     disabled: false,
     priority: 50,
     supports_websocket: false,
@@ -545,7 +582,10 @@ test("configured Tavily search returns a provider 404 without upstream fallback"
       {},
     );
     assert.equal(response.status, 404);
-    assert.equal((await response.json()).error.code, "web_search_upstream_error");
+    assert.equal(
+      (await response.json()).error.code,
+      "web_search_upstream_error",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -573,12 +613,14 @@ test("session-id header and client metadata share the same persistent binding", 
   config.services.push({
     id: "peer",
     base_url: "https://peer.example/v1",
-    keys: [{
-      id: "peer-key",
-      api_key: "peer-upstream-key",
-      disabled: false,
-      priority: 100,
-    }],
+    keys: [
+      {
+        id: "peer-key",
+        api_key: "peer-upstream-key",
+        disabled: false,
+        priority: 100,
+      },
+    ],
     disabled: false,
     priority: 100,
     models: ["grok-4.5"],
@@ -669,20 +711,23 @@ test("Worker proxies Codex image generation and edits through model routing", as
   try {
     const env = testEnv(config);
     const generation = await worker.fetch(
-      new Request("https://gateway.example/v1/images/generations?trace=generation", {
-        method: "POST",
-        headers: {
-          authorization: "Bearer client-key",
-          "content-type": "application/json",
+      new Request(
+        "https://gateway.example/v1/images/generations?trace=generation",
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer client-key",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "image-client",
+            prompt: "a fox in a field",
+            background: "auto",
+            quality: "auto",
+            size: "auto",
+          }),
         },
-        body: JSON.stringify({
-          model: "image-client",
-          prompt: "a fox in a field",
-          background: "auto",
-          quality: "auto",
-          size: "auto",
-        }),
-      }),
+      ),
       env,
       {},
     );
@@ -869,18 +914,20 @@ test("gateway logs route application independently from model rewriting", async 
   try {
     for (const testCase of cases) {
       clearConfigCacheForTests();
-      const captured = await captureLogs(() => worker.fetch(
-        new Request("https://gateway.example/v1/responses", {
-          method: "POST",
-          headers: {
-            authorization: "Bearer client-key",
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ model: testCase.model, input: "hello" }),
-        }),
-        testEnv(testCase.configure()),
-        {},
-      ));
+      const captured = await captureLogs(() =>
+        worker.fetch(
+          new Request("https://gateway.example/v1/responses", {
+            method: "POST",
+            headers: {
+              authorization: "Bearer client-key",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ model: testCase.model, input: "hello" }),
+          }),
+          testEnv(testCase.configure()),
+          {},
+        ),
+      );
 
       assert.equal(captured.value.status, 200, testCase.name);
       assert.equal(captured.entries.length, 1, testCase.name);
@@ -895,6 +942,70 @@ test("gateway logs route application independently from model rewriting", async 
         testCase.name,
       );
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("gateway applies per-key model routes and keeps other keys on global routes", async () => {
+  const originalFetch = globalThis.fetch;
+  const upstreamBodies = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    upstreamBodies.push(JSON.parse(await request.text()));
+    return new Response("ok", { status: 200 });
+  };
+  const config = gatewayConfig();
+  config.api_keys = [
+    {
+      id: "gateway-client",
+      api_key: "client-key",
+      services: ["primary"],
+      model_routes: {
+        "gpt-5.6-sol": { model: "review-model", services: ["primary"] },
+      },
+    },
+    {
+      id: "gateway-client-other",
+      api_key: "other-client-key",
+      services: ["primary"],
+    },
+  ];
+
+  try {
+    clearConfigCacheForTests();
+    const firstResponse = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      testEnv(config),
+      {},
+    );
+    assert.equal(firstResponse.status, 200);
+
+    clearConfigCacheForTests();
+    const secondResponse = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer other-client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      testEnv(config),
+      {},
+    );
+    assert.equal(secondResponse.status, 200);
+    assert.deepEqual(
+      upstreamBodies.map((body) => body.model),
+      ["review-model", "grok-4.5"],
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -915,18 +1026,20 @@ test("gateway summarizes configured retries in the single request log", async ()
 
   let captured;
   try {
-    captured = await captureLogs(() => worker.fetch(
-      new Request("https://gateway.example/v1/responses", {
-        method: "POST",
-        headers: {
-          authorization: "Bearer client-key",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
-      }),
-      testEnv(config),
-      {},
-    ));
+    captured = await captureLogs(() =>
+      worker.fetch(
+        new Request("https://gateway.example/v1/responses", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer client-key",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+        }),
+        testEnv(config),
+        {},
+      ),
+    );
     assert.equal(captured.value.status, 200);
   } finally {
     globalThis.fetch = originalFetch;
@@ -939,7 +1052,9 @@ test("gateway summarizes configured retries in the single request log", async ()
     [429, 429, 200],
   );
   assert.deepEqual(
-    captured.entries[0].upstream.attempts.map((attempt) => attempt.retry_delay_ms ?? null),
+    captured.entries[0].upstream.attempts.map(
+      (attempt) => attempt.retry_delay_ms ?? null,
+    ),
     [0, 0, null],
   );
 });
@@ -961,7 +1076,10 @@ test("model endpoint switches between standard and Codex response formats", asyn
   try {
     const standard = await worker.fetch(
       new Request("https://gateway.example/v1/models", {
-        headers: { authorization: "Bearer client-key", "user-agent": "OpenAI-SDK" },
+        headers: {
+          authorization: "Bearer client-key",
+          "user-agent": "OpenAI-SDK",
+        },
       }),
       env,
       {},
@@ -974,7 +1092,10 @@ test("model endpoint switches between standard and Codex response formats", asyn
 
     const codex = await worker.fetch(
       new Request("https://gateway.example/models", {
-        headers: { authorization: "Bearer client-key", "user-agent": "Codex CLI" },
+        headers: {
+          authorization: "Bearer client-key",
+          "user-agent": "Codex CLI",
+        },
       }),
       env,
       {},
@@ -993,22 +1114,28 @@ test("model catalog fan-out is summarized in one request log", async () => {
   clearConfigCacheForTests();
   clearModelsCacheForTests();
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => Response.json({
-    data: [
-      { id: "grok-4.5", object: "model" },
-      { id: "review-model", object: "model" },
-    ],
-  });
+  globalThis.fetch = async () =>
+    Response.json({
+      data: [
+        { id: "grok-4.5", object: "model" },
+        { id: "review-model", object: "model" },
+      ],
+    });
 
   let captured;
   try {
-    captured = await captureLogs(() => worker.fetch(
-      new Request("https://gateway.example/v1/models", {
-        headers: { authorization: "Bearer client-key", "user-agent": "OpenAI-SDK" },
-      }),
-      testEnv(gatewayConfig()),
-      {},
-    ));
+    captured = await captureLogs(() =>
+      worker.fetch(
+        new Request("https://gateway.example/v1/models", {
+          headers: {
+            authorization: "Bearer client-key",
+            "user-agent": "OpenAI-SDK",
+          },
+        }),
+        testEnv(gatewayConfig()),
+        {},
+      ),
+    );
     assert.equal(captured.value.status, 200);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1036,12 +1163,14 @@ test("partial model catalog failures remain visible at warn level", async () => 
   config.services.push({
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [{
-      id: "secondary-key",
-      api_key: "secondary-key",
-      disabled: false,
-      priority: 50,
-    }],
+    keys: [
+      {
+        id: "secondary-key",
+        api_key: "secondary-key",
+        disabled: false,
+        priority: 50,
+      },
+    ],
     disabled: false,
     priority: 50,
     models: ["grok-4.5"],
@@ -1052,7 +1181,10 @@ test("partial model catalog failures remain visible at warn level", async () => 
   globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
     if (request.url.startsWith("https://primary.example/")) {
-      return Response.json({ error: { code: "primary_unavailable" } }, { status: 500 });
+      return Response.json(
+        { error: { code: "primary_unavailable" } },
+        { status: 500 },
+      );
     }
     return Response.json({ data: [{ id: "grok-4.5", object: "model" }] });
   };
@@ -1101,12 +1233,14 @@ test("model catalog logs JSON upstream errors within one request budget", async 
     config.services.push({
       id: `service-${index}`,
       base_url: `https://service-${index}.example/v1`,
-      keys: [{
-        id: `service-key-${index}`,
-        api_key: `upstream-${index}`,
-        disabled: false,
-        priority: 100 - index,
-      }],
+      keys: [
+        {
+          id: `service-key-${index}`,
+          api_key: `upstream-${index}`,
+          disabled: false,
+          priority: 100 - index,
+        },
+      ],
       disabled: false,
       priority: 100 - index,
       models: ["grok-4.5"],
@@ -1116,12 +1250,15 @@ test("model catalog logs JSON upstream errors within one request budget", async 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
-    return Response.json({
-      error: {
-        service: new URL(request.url).hostname,
-        detail: "x".repeat(20 * 1024),
+    return Response.json(
+      {
+        error: {
+          service: new URL(request.url).hostname,
+          detail: "x".repeat(20 * 1024),
+        },
       },
-    }, { status: 500 });
+      { status: 500 },
+    );
   };
 
   const execution = trackedExecutionContext();
@@ -1146,11 +1283,17 @@ test("model catalog logs JSON upstream errors within one request budget", async 
   assert.equal(captured.entries.length, 1);
   const [entry] = captured.entries;
   assert.equal(entry.catalog.upstream_errors.length, 3);
-  assert.equal(Object.hasOwn(entry.catalog.upstream_errors[0], "error_json"), true);
+  assert.equal(
+    Object.hasOwn(entry.catalog.upstream_errors[0], "error_json"),
+    true,
+  );
   assert.equal(
     entry.catalog.upstream_errors
       .slice(1)
-      .every((upstream) => upstream.error_json_omitted === "request_log_budget_exceeded"),
+      .every(
+        (upstream) =>
+          upstream.error_json_omitted === "request_log_budget_exceeded",
+      ),
     true,
   );
   assert.equal(Object.hasOwn(entry.catalog, "returned_model_count"), false);
@@ -1176,14 +1319,20 @@ test("successful model catalogs are cached for repeated equivalent requests", as
     };
     const first = await worker.fetch(
       new Request("https://gateway.example/v1/models", {
-        headers: { authorization: "Bearer client-key", "user-agent": "OpenAI-SDK" },
+        headers: {
+          authorization: "Bearer client-key",
+          "user-agent": "OpenAI-SDK",
+        },
       }),
       env,
       {},
     );
     const second = await worker.fetch(
       new Request("https://gateway.example/v1/models", {
-        headers: { authorization: "Bearer client-key", "user-agent": "OpenAI-SDK" },
+        headers: {
+          authorization: "Bearer client-key",
+          "user-agent": "OpenAI-SDK",
+        },
       }),
       env,
       {},
@@ -1229,20 +1378,30 @@ test("concurrent model catalog misses do not share request-scoped I/O", async ()
       MODELS_CACHE_TTL_SECONDS: "30",
     };
     for (let index = 0; index < 2; index += 1) {
-      pending.push(worker.fetch(
-        new Request("https://gateway.example/v1/models", {
-          headers: { authorization: "Bearer client-key", "user-agent": "OpenAI-SDK" },
-        }),
-        env,
-        {},
-      ));
+      pending.push(
+        worker.fetch(
+          new Request("https://gateway.example/v1/models", {
+            headers: {
+              authorization: "Bearer client-key",
+              "user-agent": "OpenAI-SDK",
+            },
+          }),
+          env,
+          {},
+        ),
+      );
     }
 
     await Promise.race([
       twoCalls,
       new Promise((_, reject) => {
         timeout = setTimeout(
-          () => reject(new Error("concurrent model requests shared one upstream operation")),
+          () =>
+            reject(
+              new Error(
+                "concurrent model requests shared one upstream operation",
+              ),
+            ),
           2_000,
         );
       }),
@@ -1250,7 +1409,10 @@ test("concurrent model catalog misses do not share request-scoped I/O", async ()
     assert.equal(calls, 2);
     releaseUpstream();
     const responses = await Promise.all(pending);
-    assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+    assert.deepEqual(
+      responses.map((response) => response.status),
+      [200, 200],
+    );
   } finally {
     clearTimeout(timeout);
     releaseUpstream();
@@ -1267,12 +1429,14 @@ test("disabled services are skipped for inference and model aggregation", async 
   config.services.push({
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [{
-      id: "secondary-key",
-      api_key: "secondary-key",
-      disabled: false,
-      priority: 50,
-    }],
+    keys: [
+      {
+        id: "secondary-key",
+        api_key: "secondary-key",
+        disabled: false,
+        priority: 50,
+      },
+    ],
     disabled: false,
     priority: 50,
     models: ["grok-4.5"],
@@ -1310,7 +1474,10 @@ test("disabled services are skipped for inference and model aggregation", async 
 
     const models = await worker.fetch(
       new Request("https://gateway.example/v1/models", {
-        headers: { authorization: "Bearer client-key", "user-agent": "OpenAI-SDK" },
+        headers: {
+          authorization: "Bearer client-key",
+          "user-agent": "OpenAI-SDK",
+        },
       }),
       env,
       {},
@@ -1335,12 +1502,14 @@ test("an upstream error is returned without retrying another service", async () 
   config.services.push({
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [{
-      id: "secondary-key",
-      api_key: "secondary-key",
-      disabled: false,
-      priority: 50,
-    }],
+    keys: [
+      {
+        id: "secondary-key",
+        api_key: "secondary-key",
+        disabled: false,
+        priority: 50,
+      },
+    ],
     disabled: false,
     priority: 50,
     models: ["grok-4.5"],
@@ -1413,17 +1582,18 @@ test("JSON upstream error logging does not delay returning the original response
   clearConfigCacheForTests();
   const originalFetch = globalThis.fetch;
   let bodyController;
-  globalThis.fetch = async () => new Response(
-    new ReadableStream({
-      start(controller) {
-        bodyController = controller;
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          bodyController = controller;
+        },
+      }),
+      {
+        status: 500,
+        headers: { "content-type": "application/json" },
       },
-    }),
-    {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    },
-  );
+    );
 
   const execution = trackedExecutionContext();
   let captured;
@@ -1444,7 +1614,10 @@ test("JSON upstream error logging does not delay returning the original response
           execution.context,
         ),
         new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error("response waited for log body")), 250);
+          timer = setTimeout(
+            () => reject(new Error("response waited for log body")),
+            250,
+          );
         }),
       ]).finally(() => clearTimeout(timer));
       assert.equal(response.status, 500);
@@ -1468,25 +1641,28 @@ test("JSON upstream error logging does not delay returning the original response
 test("non-JSON upstream errors log only the status without buffering the body", async () => {
   clearConfigCacheForTests();
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response("temporary upstream failure", {
-    status: 502,
-    headers: { "content-type": "text/plain; charset=utf-8" },
-  });
+  globalThis.fetch = async () =>
+    new Response("temporary upstream failure", {
+      status: 502,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
 
   let captured;
   try {
-    captured = await captureLogs(() => worker.fetch(
-      new Request("https://gateway.example/v1/responses", {
-        method: "POST",
-        headers: {
-          authorization: "Bearer client-key",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
-      }),
-      testEnv(gatewayConfig()),
-      {},
-    ));
+    captured = await captureLogs(() =>
+      worker.fetch(
+        new Request("https://gateway.example/v1/responses", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer client-key",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+        }),
+        testEnv(gatewayConfig()),
+        {},
+      ),
+    );
     assert.equal(captured.value.status, 502);
     assert.equal(await captured.value.text(), "temporary upstream failure");
   } finally {
@@ -1508,12 +1684,14 @@ test("an authenticated client can list and clear health only for allowed service
   config.services.push({
     id: "secondary",
     base_url: "https://secondary.example/v1",
-    keys: [{
-      id: "secondary-key",
-      api_key: "secondary-key",
-      disabled: false,
-      priority: 50,
-    }],
+    keys: [
+      {
+        id: "secondary-key",
+        api_key: "secondary-key",
+        disabled: false,
+        priority: 50,
+      },
+    ],
     disabled: false,
     priority: 50,
     models: ["grok-4.5"],
@@ -1525,7 +1703,9 @@ test("an authenticated client can list and clear health only for allowed service
     env.HEALTH.getByName("secondary").recordFailure();
   }
   env.HEALTH.getByName("key:primary:primary-key").recordImmediateFailure();
-  env.HEALTH.getByName("key:primary:primary-key:catalog").recordImmediateFailure();
+  env.HEALTH.getByName(
+    "key:primary:primary-key:catalog",
+  ).recordImmediateFailure();
   assert.equal(await serviceIsAvailable(env, "primary"), false);
 
   const cooling = env.HEALTH.getByName("primary").getStatus();
@@ -1572,10 +1752,13 @@ test("an authenticated client can list and clear health only for allowed service
   });
 
   const catalogKeyResponse = await worker.fetch(
-    new Request("https://gateway.example/health/primary/primary-key?scope=catalog", {
-      method: "DELETE",
-      headers: { authorization: "Bearer client-key" },
-    }),
+    new Request(
+      "https://gateway.example/health/primary/primary-key?scope=catalog",
+      {
+        method: "DELETE",
+        headers: { authorization: "Bearer client-key" },
+      },
+    ),
     env,
     {},
   );
@@ -1731,7 +1914,10 @@ test("authenticated clients can page, inspect, and delete only their session bin
     assert.equal(binding.key_id, "primary-key");
     assert.equal(typeof binding.created_at, "number");
     assert.equal(typeof binding.updated_at, "number");
-    assert.equal(binding.expires_at, binding.updated_at + SESSION_AFFINITY_TTL_MS);
+    assert.equal(
+      binding.expires_at,
+      binding.updated_at + SESSION_AFFINITY_TTL_MS,
+    );
   }
 
   const secondPage = await worker.fetch(
@@ -1745,7 +1931,11 @@ test("authenticated clients can page, inspect, and delete only their session bin
   const secondPayload = await secondPage.json();
   assert.equal(secondPayload.next_cursor, null);
   assert.deepEqual(
-    new Set([...firstPayload.data, ...secondPayload.data].map((entry) => entry.session_id)),
+    new Set(
+      [...firstPayload.data, ...secondPayload.data].map(
+        (entry) => entry.session_id,
+      ),
+    ),
     new Set(["first", "second", "path/value", "unindexed"]),
   );
 
@@ -1761,17 +1951,25 @@ test("authenticated clients can page, inspect, and delete only their session bin
     ["other"],
   );
 
-  const unindexedIdentity = await sessionAffinityIdentity("client-key", "unindexed");
+  const unindexedIdentity = await sessionAffinityIdentity(
+    "client-key",
+    "unindexed",
+  );
   const unindexedRegistry = env.SESSION_AFFINITY_INDEX.getByName(
     unindexedIdentity.registry_name,
   );
-  const unindexedEntry = await unindexedRegistry.get(unindexedIdentity.session_digest);
-  assert.ok(unindexedEntry);
-  assert.equal(await unindexedRegistry.remove(
+  const unindexedEntry = await unindexedRegistry.get(
     unindexedIdentity.session_digest,
-    unindexedEntry.binding_id,
-    unindexedEntry.generation,
-  ), true);
+  );
+  assert.ok(unindexedEntry);
+  assert.equal(
+    await unindexedRegistry.remove(
+      unindexedIdentity.session_digest,
+      unindexedEntry.binding_id,
+      unindexedEntry.generation,
+    ),
+    true,
+  );
   const removedUnindexed = await worker.fetch(
     new Request("https://gateway.example/sessions/unindexed", {
       method: "DELETE",
@@ -1861,11 +2059,14 @@ test("a stale indexed delete protects the replacement and remains retryable", as
     const current = await affinity.getStatus();
     assert.ok(current?.binding_id);
     const index = env.SESSION_AFFINITY_INDEX.getByName(identity.registry_name);
-    assert.equal(await index.remove(
-      identity.session_digest,
-      current.binding_id,
-      current.generation,
-    ), true);
+    assert.equal(
+      await index.remove(
+        identity.session_digest,
+        current.binding_id,
+        current.generation,
+      ),
+      true,
+    );
     await index.register({
       session_digest: identity.session_digest,
       session_id: identity.session_id,
@@ -1927,7 +2128,12 @@ test("session endpoints validate methods, pagination, authentication, and sessio
   );
   assert.equal(unauthorized.status, 401);
 
-  for (const search of ["?limit=", "?limit=0", "?limit=1001", "?cursor=invalid"]) {
+  for (const search of [
+    "?limit=",
+    "?limit=0",
+    "?limit=1001",
+    "?cursor=invalid",
+  ]) {
     const response = await worker.fetch(
       new Request(`https://gateway.example/sessions${search}`, {
         headers: { authorization: "Bearer client-key" },
@@ -1936,7 +2142,10 @@ test("session endpoints validate methods, pagination, authentication, and sessio
       {},
     );
     assert.equal(response.status, 400);
-    assert.equal((await response.json()).error.code, "invalid_session_list_query");
+    assert.equal(
+      (await response.json()).error.code,
+      "invalid_session_list_query",
+    );
   }
 
   const invalidSession = await worker.fetch(

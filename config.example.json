@@ -22,10 +22,20 @@
       "priority": 100,
       "supports_websocket": true,
       "supports_web_search": true,
-      "models": ["grok-4.5", "gpt-4.1", "gpt-image-2"],
+      "models": [
+        "grok-4.5",
+        "gpt-4.1",
+        "gpt-image-2"
+      ],
       "retry": {
-        "status_codes": [429],
-        "delays_ms": [250, 500, 1000]
+        "status_codes": [
+          429
+        ],
+        "delays_ms": [
+          250,
+          500,
+          1000
+        ]
       }
     },
     {
@@ -43,10 +53,16 @@
       "priority": 50,
       "supports_websocket": false,
       "supports_web_search": false,
-      "models": ["grok-4.5"],
+      "models": [
+        "grok-4.5"
+      ],
       "retry": {
-        "status_codes": [429],
-        "delays_ms": [1000]
+        "status_codes": [
+          429
+        ],
+        "delays_ms": [
+          1000
+        ]
       }
     }
   ],
@@ -54,12 +70,25 @@
     {
       "id": "client-a",
       "api_key": "sk-gateway-client-a",
-      "services": ["primary", "secondary"]
+      "services": [
+        "primary",
+        "secondary"
+      ]
     },
     {
       "id": "client-b",
       "api_key": "sk-gateway-client-b",
-      "services": ["secondary"]
+      "services": [
+        "secondary"
+      ],
+      "model_routes": {
+        "gpt-5.6-sol": {
+          "model": "grok-4.5",
+          "services": [
+            "secondary"
+          ]
+        }
+      }
     }
   ],
   "model_routes": {
@@ -68,7 +97,9 @@
     },
     "codex-auto-review": {
       "model": "gpt-4.1",
-      "services": ["primary"]
+      "services": [
+        "primary"
+      ]
     }
   },
   "web_search": {

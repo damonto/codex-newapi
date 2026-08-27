@@ -26,6 +26,7 @@ export interface ClientApiKeyConfig {
   id: string;
   api_key: string;
   services: string[];
+  model_routes?: Record<string, ModelRouteConfig>;
 }
 
 export interface ModelRouteConfig {

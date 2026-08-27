@@ -1,4 +1,10 @@
 import {
+  chooseAffinityCandidate,
+  sessionAffinityIdentity,
+  type AffinityRandomSource,
+  type AffinityServiceCandidate,
+} from "./affinity.ts";
+import {
   mapWithConcurrency,
   SERVICE_FAN_OUT_CONCURRENCY,
 } from "./concurrency.ts";
@@ -9,12 +15,6 @@ import {
   type ServiceAvailability,
 } from "./health.ts";
 import { errorMessage } from "./log.ts";
-import {
-  chooseAffinityCandidate,
-  sessionAffinityIdentity,
-  type AffinityRandomSource,
-  type AffinityServiceCandidate,
-} from "./affinity.ts";
 import { randomEntry } from "./random.ts";
 import type {
   ClientApiKeyConfig,
@@ -91,6 +91,16 @@ interface RouteAvailability {
   keyChecks: KeySelectionCheck[];
 }
 
+export function modelRoutesForClient(
+  config: GatewayConfig,
+  client: ClientApiKeyConfig,
+): Record<string, ModelRouteConfig> {
+  return {
+    ...config.model_routes,
+    ...(client.model_routes ?? {}),
+  };
+}
+
 export function selectServiceApiKey(
   service: ServiceConfig,
   random?: AffinityRandomSource,
@@ -146,9 +156,10 @@ export function resolveModelRoute(
   options: ResolveModelRouteOptions = {},
 ): ModelRoute {
   const allowedServices = new Set(client.services);
-  const routeApplied = Object.hasOwn(config.model_routes, requestedModel);
+  const modelRoutes = modelRoutesForClient(config, client);
+  const routeApplied = Object.hasOwn(modelRoutes, requestedModel);
   const configuredRoute = routeApplied
-    ? config.model_routes[requestedModel]
+    ? modelRoutes[requestedModel]
     : undefined;
   const upstreamModel = configuredRoute?.model ?? requestedModel;
   const targets = config.services.flatMap((service) => {

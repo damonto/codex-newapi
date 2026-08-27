@@ -1,3 +1,9 @@
+import { errorMessage, type RequestLogContext } from "./log.ts";
+import {
+  isWebSearchProviderMode,
+  WEB_SEARCH_PROVIDER_MODES,
+  webSearchProviderFor,
+} from "./search-providers/index.ts";
 import type {
   ClientApiKeyConfig,
   GatewayConfig,
@@ -7,12 +13,6 @@ import type {
   ServiceRetryConfig,
   WebSearchConfig,
 } from "./types.ts";
-import { errorMessage, type RequestLogContext } from "./log.ts";
-import {
-  isWebSearchProviderMode,
-  WEB_SEARCH_PROVIDER_MODES,
-  webSearchProviderFor,
-} from "./search-providers/index.ts";
 
 const DEFAULT_CONFIG_KEY = "gateway-config";
 const DEFAULT_CACHE_TTL_SECONDS = 10;
@@ -43,7 +43,7 @@ const SERVICE_API_KEY_FIELDS = new Set([
   "disabled",
   "priority",
 ]);
-const API_KEY_FIELDS = new Set(["id", "api_key", "services"]);
+const API_KEY_FIELDS = new Set(["id", "api_key", "services", "model_routes"]);
 const MODEL_ROUTE_FIELDS = new Set(["model", "services"]);
 const RETRY_FIELDS = new Set(["status_codes", "delays_ms"]);
 const WEB_SEARCH_FIELDS = new Set(["mode", "base_url", "api_key", "max_results"]);
@@ -292,27 +292,32 @@ function parseApiKey(value: unknown, index: number): ClientApiKeyConfig {
     throw new ConfigError(`${path} must be an object`);
   }
   rejectUnknownFields(value, API_KEY_FIELDS, path);
+  const modelRoutes = parseModelRoutes(value.model_routes, `${path}.model_routes`);
   return {
     id: validateId(value.id, `${path}.id`),
     api_key: requiredString(value.api_key, `${path}.api_key`),
     services: stringArray(value.services, `${path}.services`),
+    ...(Object.keys(modelRoutes).length > 0 ? { model_routes: modelRoutes } : {}),
   };
 }
 
-function parseModelRoutes(value: unknown): Record<string, ModelRouteConfig> {
+function parseModelRoutes(
+  value: unknown,
+  basePath: string,
+): Record<string, ModelRouteConfig> {
   if (value === undefined) {
     return {};
   }
   if (!isRecord(value)) {
-    throw new ConfigError("model_routes must be an object");
+    throw new ConfigError(`${basePath} must be an object`);
   }
   const routes: Array<[string, ModelRouteConfig]> = [];
   const clientModels = new Set<string>();
   for (const [rawClientModel, rawRoute] of Object.entries(value)) {
-    const clientModel = requiredString(rawClientModel, "model_routes key");
-    const path = `model_routes.${clientModel}`;
+    const clientModel = requiredString(rawClientModel, `${basePath} key`);
+    const path = `${basePath}.${clientModel}`;
     if (clientModels.has(clientModel)) {
-      throw new ConfigError(`model_routes contains duplicate normalized model ${clientModel}`);
+      throw new ConfigError(`${basePath} contains duplicate normalized model ${clientModel}`);
     }
     clientModels.add(clientModel);
     if (!isRecord(rawRoute)) {
@@ -369,28 +374,39 @@ export function parseConfig(value: unknown): GatewayConfig {
     }
   }
 
-  const modelRoutes = parseModelRoutes(value.model_routes);
+  const modelRoutes = parseModelRoutes(value.model_routes, "model_routes");
   const webSearch = parseWebSearch(value.web_search);
   const knownUpstreamModels = new Set(services.flatMap((service) => service.models));
   const servicesById = new Map(services.map((service) => [service.id, service]));
-  for (const [clientModel, route] of Object.entries(modelRoutes)) {
+  const validateRoute = (
+    route: ModelRouteConfig,
+    path: string,
+  ): void => {
     if (!knownUpstreamModels.has(route.model)) {
       throw new ConfigError(
-        `model_routes.${clientModel}.model targets ${route.model}, which no service supports`,
+        `${path}.model targets ${route.model}, which no service supports`,
       );
     }
     for (const serviceId of route.services ?? []) {
       const service = servicesById.get(serviceId);
       if (!service) {
         throw new ConfigError(
-          `model_routes.${clientModel}.services references unknown service ${serviceId}`,
+          `${path}.services references unknown service ${serviceId}`,
         );
       }
       if (!service.models.includes(route.model)) {
         throw new ConfigError(
-          `model_routes.${clientModel}.model ${route.model} is not listed by service ${serviceId}`,
+          `${path}.model ${route.model} is not listed by service ${serviceId}`,
         );
       }
+    }
+  };
+  for (const [clientModel, route] of Object.entries(modelRoutes)) {
+    validateRoute(route, `model_routes.${clientModel}`);
+  }
+  for (const [index, entry] of apiKeys.entries()) {
+    for (const [clientModel, route] of Object.entries(entry.model_routes ?? {})) {
+      validateRoute(route, `api_keys[${index}].model_routes.${clientModel}`);
     }
   }
 

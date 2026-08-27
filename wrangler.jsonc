@@ -3,11 +3,20 @@
 	"name": "cody",
 	"main": "src/worker.ts",
 	"compatibility_date": "2026-07-24",
-	"compatibility_flags": ["nodejs_compat"],
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
 	"workers_dev": true,
 	"observability": {
 		"enabled": true,
-		"head_sampling_rate": 0.1
+		"logs": {
+			"head_sampling_rate": 0.1,
+			"persist": true
+		},
+		"traces": {
+			"enabled": true,
+			"head_sampling_rate": 0.01
+		}
 	},
 	"vars": {
 		"CONFIG_KEY": "gateway-config",

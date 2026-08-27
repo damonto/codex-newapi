@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { keyIsAvailable, ServiceHealthState } from "../src/health.ts";
 import {
   aggregateCodexModels,
   aggregateStandardModels,
@@ -9,7 +10,6 @@ import {
   MAX_MODEL_CATALOG_BODY_BYTES,
   MODEL_CATALOG_CONCURRENCY,
 } from "../src/models.ts";
-import { keyIsAvailable, ServiceHealthState } from "../src/health.ts";
 
 const results = [
   {
@@ -28,14 +28,20 @@ test("standard aggregation adds a route without hiding the upstream model", () =
   const models = aggregateStandardModels(results, {
     "gpt-5.6-sol": { model: "grok-4.5" },
   });
-  assert.deepEqual(models.map((model) => model.id), ["grok-4.5", "gpt-5.6-sol"]);
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ["grok-4.5", "gpt-5.6-sol"],
+  );
 });
 
 test("standard aggregation honors route service constraints", () => {
   const models = aggregateStandardModels(results, {
     "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] },
   });
-  assert.deepEqual(models.map((model) => model.id), ["grok-4.5"]);
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ["grok-4.5"],
+  );
 });
 
 test("a self-route hides a model supplied only by disallowed services", () => {
@@ -44,10 +50,12 @@ test("a self-route hides a model supplied only by disallowed services", () => {
   };
   assert.deepEqual(aggregateStandardModels(results, routes), []);
 
-  const secondaryResults = [{
-    ...results[0],
-    service: { id: "secondary", models: ["grok-4.5"] },
-  }];
+  const secondaryResults = [
+    {
+      ...results[0],
+      service: { id: "secondary", models: ["grok-4.5"] },
+    },
+  ];
   assert.deepEqual(
     aggregateStandardModels(secondaryResults, routes).map((model) => model.id),
     ["grok-4.5"],
@@ -55,7 +63,9 @@ test("a self-route hides a model supplied only by disallowed services", () => {
 });
 
 test("Codex aggregation only returns exact catalog matches", () => {
-  const models = aggregateCodexModels(new Set(["grok-4.5", "gpt-5.6-sol", "codex-auto-review"]));
+  const models = aggregateCodexModels(
+    new Set(["grok-4.5", "gpt-5.6-sol", "codex-auto-review"]),
+  );
   assert.deepEqual(
     models.map((model) => model.slug),
     ["gpt-5.6-sol", "codex-auto-review"],
@@ -74,6 +84,73 @@ test("model cache key hashing failures propagate", async (t) => {
     handleModels(modelRequest(), env, config, config.api_keys[0]),
     /SHA-256 unavailable/,
   );
+});
+
+test("model catalogs reflect each client's per-key model routes", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  config.api_keys = [
+    {
+      id: "client-a",
+      api_key: "client-a",
+      services: ["service-0"],
+      model_routes: {
+        "per-key-alias": { model: "model" },
+        "global-alias": { model: "model", services: ["service-0"] },
+      },
+    },
+    {
+      id: "client-b",
+      api_key: "client-b",
+      services: ["service-0"],
+    },
+  ];
+  config.model_routes = {
+    "global-alias": { model: "model" },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ data: [{ id: "model", object: "model" }] });
+  const { env } = healthEnvironment();
+
+  try {
+    const first = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          authorization: "Bearer client-a",
+          "user-agent": "OpenAI-SDK",
+        },
+      }),
+      env,
+      config,
+      config.api_keys[0],
+      "first",
+    );
+    const second = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          authorization: "Bearer client-b",
+          "user-agent": "OpenAI-SDK",
+        },
+      }),
+      env,
+      config,
+      config.api_keys[1],
+      "second",
+    );
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.deepEqual(
+      (await first.json()).data.map((model) => model.id),
+      ["model", "global-alias", "per-key-alias"],
+    );
+    assert.deepEqual(
+      (await second.json()).data.map((model) => model.id),
+      ["model", "global-alias"],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 function modelConfig(serviceCount = 1) {
@@ -100,11 +177,13 @@ function modelConfig(serviceCount = 1) {
   }));
   return {
     services,
-    api_keys: [{
-      id: "client",
-      api_key: "client",
-      services: services.map((service) => service.id),
-    }],
+    api_keys: [
+      {
+        id: "client",
+        api_key: "client",
+        services: services.map((service) => service.id),
+      },
+    ],
     model_routes: {
       "codex-auto-review": { model: "model", services: [services[0].id] },
     },
@@ -169,7 +248,13 @@ test("model catalogs cancel unused error bodies and only 400/503 affect HTTP hea
   const { calls, env } = healthEnvironment();
 
   try {
-    const response = await handleModels(modelRequest(), env, config, client, "test");
+    const response = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      client,
+      "test",
+    );
     assert.equal(response.status, 502);
     assert.equal(cancelled, true);
     assert.equal(calls.failure, 0);
@@ -187,7 +272,13 @@ test("HTTP 503 model catalog responses increment catalog health", async () => {
   const { calls, env } = healthEnvironment();
 
   try {
-    const response = await handleModels(modelRequest(), env, config, client, "test");
+    const response = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      client,
+      "test",
+    );
     assert.equal(response.status, 502);
     assert.equal(calls.failure, 1);
   } finally {
@@ -204,7 +295,13 @@ test("HTTP 403 model catalog responses cool only the selected catalog key", asyn
   const { calls, env } = healthEnvironment();
 
   try {
-    const response = await handleModels(modelRequest(), env, config, client, "test");
+    const response = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      client,
+      "test",
+    );
     assert.equal(response.status, 502);
     assert.equal(calls.keyFailure, 1);
     assert.equal(calls.failure, 0);
@@ -239,9 +336,21 @@ test("a catalog-cooled key is replaced only on the next catalog request", async 
   const { env } = healthEnvironment();
 
   try {
-    const first = await handleModels(modelRequest(), env, config, client, "first");
+    const first = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      client,
+      "first",
+    );
     clearModelsCacheForTests();
-    const second = await handleModels(modelRequest(), env, config, client, "second");
+    const second = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      client,
+      "second",
+    );
     assert.equal(first.status, 502);
     assert.equal(second.status, 200);
     assert.deepEqual(authorizations, [
@@ -274,7 +383,13 @@ test("oversized model catalogs are cancelled before buffering", async () => {
   const { calls, env } = healthEnvironment();
 
   try {
-    const response = await handleModels(modelRequest(), env, config, client, "test");
+    const response = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      client,
+      "test",
+    );
     assert.equal(response.status, 502);
     assert.equal(cancelled, true);
     assert.equal(calls.failure, 1);
@@ -302,7 +417,13 @@ test("model catalog fan-out is bounded", async () => {
   const { env } = healthEnvironment();
 
   try {
-    const response = await handleModels(modelRequest(), env, config, client, "test");
+    const response = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      client,
+      "test",
+    );
     assert.equal(response.status, 200);
     assert.equal(calls, MODEL_CATALOG_CONCURRENCY * 2);
     assert.equal(maximumActive, MODEL_CATALOG_CONCURRENCY);
@@ -326,7 +447,13 @@ test("model catalogs use one selected key per service", async () => {
   const { env } = healthEnvironment();
 
   try {
-    const response = await handleModels(modelRequest(), env, config, client, "test");
+    const response = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      client,
+      "test",
+    );
     assert.equal(response.status, 200);
     assert.deepEqual(authorizations, ["Bearer upstream-backup-0"]);
   } finally {
@@ -352,7 +479,13 @@ test("model catalogs skip services without an enabled key", async () => {
   const { env } = healthEnvironment();
 
   try {
-    const response = await handleModels(modelRequest(), env, config, client, "test");
+    const response = await handleModels(
+      modelRequest(),
+      env,
+      config,
+      client,
+      "test",
+    );
     assert.equal(response.status, 200);
     assert.deepEqual(urls, ["https://service-1.example/v1/models"]);
   } finally {

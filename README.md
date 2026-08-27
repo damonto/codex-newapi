@@ -105,8 +105,8 @@ npm run deploy
 - `services[].keys`: upstream credentials for one service. The highest-priority available key is used; equal priorities follow configuration order.
 - `services[].supports_websocket`: whether the service can receive Responses WebSocket connections. Defaults to `false` when omitted.
 - `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests in `proxy` mode. Defaults to `false` when omitted.
-- `api_keys`: keys used by your clients and the services each key may access. Each entry requires a globally unique, non-sensitive `id`.
-- `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services.
+- `api_keys`: keys used by your clients and the services each key may access. Each entry requires a globally unique, non-sensitive `id`. An entry may also include optional `model_routes` that override the global routes for that key.
+- `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services. Each `api_keys[]` entry may provide its own `model_routes`; per-key entries override the global route for the same client-facing model, while unconfigured models fall back to the global routes.
 - `web_search.mode`: selects standalone search behavior. `proxy` (the default) forwards `/v1/alpha/search` to a `supports_web_search` upstream service; `tavily` and `exa` call the configured provider directly and never fall back to proxy.
 - `web_search.base_url`: optional provider base URL. Defaults to `https://api.tavily.com` or `https://api.exa.ai` for adapter modes.
 - `web_search.api_key`: provider credential. Keep it in the KV configuration and out of source-controlled example files.
@@ -116,6 +116,28 @@ npm run deploy
 Existing configurations must add an `id` to every `api_keys` entry before they can be validated or loaded.
 
 When a route omits `services`, all client-authorized services that list its upstream model are eligible. When `services` is present, it is intersected with the client API key's allowed services. Unconfigured model names are forwarded directly.
+
+A client API key can override individual global routes by adding `model_routes` to its `api_keys` entry:
+
+```json
+{
+  "api_keys": [
+    {
+      "id": "client-a",
+      "api_key": "sk-gateway-client-a",
+      "services": ["primary", "secondary"],
+      "model_routes": {
+        "gpt-5.6-sol": {
+          "model": "grok-4.5",
+          "services": ["secondary"]
+        }
+      }
+    }
+  ]
+}
+```
+
+The per-key map uses the same shape and validation as the global `model_routes` and is merged per model: a model configured for the key overrides the global route of the same name, and every other model falls back to the global map. Per-key routes affect both request routing and the `/v1/models` catalog shown to that client.
 
 In `proxy` mode, standalone search selects only services with `supports_web_search: true`. Responses WebSocket connections select only services with `supports_websocket: true`. These filters are applied before priority selection and session affinity; ordinary HTTP Responses and compact requests do not require either capability.
 
@@ -179,7 +201,7 @@ Every service must declare a non-empty `keys` array, although all entries may be
 
 Client key IDs appear as `client_key_id` in authenticated request summaries. Upstream key IDs continue to appear in routing and upstream log sections. Use descriptive, non-sensitive labels and never copy credential values into `id`.
 
-To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through `model_routes`.
+To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through global or per-key `model_routes`.
 
 The gateway accepts both versioned and unversioned forms of these inference paths:
 
