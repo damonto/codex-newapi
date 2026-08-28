@@ -293,8 +293,6 @@ export async function handleInference(
   requestLog?.set({
     model: {
       requested: bounded(payload.model, 160),
-      upstream: bounded(route.upstreamModel, 160),
-      route_applied: route.routeApplied,
     },
     routing: { candidate_services: candidateServices },
   });
@@ -352,10 +350,18 @@ export async function handleInference(
     );
   }
   const { service, key: selectedKey } = target;
+  const upstreamModel = target.upstreamModel;
+  requestLog?.set({
+    model: {
+      requested: bounded(payload.model, 160),
+      upstream: bounded(upstreamModel, 160),
+      route_applied: target.routeApplied,
+    },
+  });
 
   const headers = forwardRequestHeaders(request, selectedKey.api_key);
   headers.delete("content-length");
-  const modelRewritten = payload.model !== route.upstreamModel;
+  const modelRewritten = payload.model !== upstreamModel;
   const claudeCodeIdentity =
     protocol === "anthropic" &&
     upstreamPath === "messages" &&
@@ -379,7 +385,7 @@ export async function handleInference(
   if (modelRewritten) {
     // injectClaudeCodeIdentity mutated the same payload object, so the spread
     // in rewriteModel serializes the injected identity as well.
-    body = rewriteModel(originalText, payload, route.upstreamModel);
+    body = rewriteModel(originalText, payload, upstreamModel);
   } else if (identityBodyChanged) {
     // Model is unchanged; rewriteModel would return the original text and drop
     // the injected identity, so serialize the mutated payload directly.
@@ -416,7 +422,7 @@ export async function handleInference(
       upstream: {
         service_id: service.id,
         key_id: selectedKey.id,
-        model: bounded(route.upstreamModel, 160),
+        model: bounded(upstreamModel, 160),
         model_rewritten: modelRewritten,
         duration_ms: upstreamDurationMs,
         attempts: result.attempts,
@@ -441,7 +447,7 @@ export async function handleInference(
     const upstreamBase = {
       service_id: service.id,
       key_id: selectedKey.id,
-      model: bounded(route.upstreamModel, 160),
+      model: bounded(upstreamModel, 160),
       model_rewritten: modelRewritten,
       duration_ms: upstreamDurationMs,
       attempts: result.attempts,

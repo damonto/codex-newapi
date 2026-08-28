@@ -30,9 +30,13 @@ import {
   selectAvailableServiceWithDetails,
   targetIsAvailableForRoute,
   type ModelRoute,
-  type ServiceTarget,
+  type ModelServiceTarget,
 } from "./routing.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
+import {
+  RESPONSES_WEBSOCKET_CLIENT_DIGEST_HEADER,
+  RESPONSES_WEBSOCKET_REQUEST_ID_HEADER,
+} from "./websocket-metadata.ts";
 import {
   clientFrame,
   closeSocket,
@@ -49,10 +53,6 @@ import {
   type ResponseCreateFrame,
   type WebSocketMessage,
 } from "./websocket-protocol.ts";
-import {
-  RESPONSES_WEBSOCKET_CLIENT_DIGEST_HEADER,
-  RESPONSES_WEBSOCKET_REQUEST_ID_HEADER,
-} from "./websocket-metadata.ts";
 
 const FIRST_FRAME_TIMEOUT_MS = 10_000;
 const UPSTREAM_HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -129,12 +129,19 @@ function clientDigestFrom(request: Request): string | undefined {
 function targetFromRoute(
   route: ModelRoute,
   state: StoredWebSocketSession,
-): ServiceTarget | undefined {
+): ModelServiceTarget | undefined {
   const routed = route.targets.find(
     ({ service }) => service.id === state.selected_service_id,
   );
   const key = routed?.keys.find((entry) => entry.id === state.selected_key_id);
-  return routed && key ? { service: routed.service, key } : undefined;
+  return routed && key
+    ? {
+        service: routed.service,
+        key,
+        upstreamModel: routed.upstreamModel,
+        routeApplied: routed.routeApplied,
+      }
+    : undefined;
 }
 
 function shouldRecordUpstreamFailure(
@@ -594,7 +601,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     originalMessage: string,
     frame: ResponseCreateFrame,
     route: ModelRoute,
-    target: ServiceTarget,
+    target: ModelServiceTarget,
     sessionId: string | undefined,
   ): Promise<void> {
     const connecting = await this.transition(["routing"], (state) => ({
@@ -758,7 +765,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     const rewritten = rewriteResponseCreate(
       originalMessage,
       frame,
-      route.upstreamModel,
+      target.upstreamModel,
     );
     if (!safeSend(socket, rewritten)) {
       await this.recordServiceFailureOnce();
@@ -773,8 +780,8 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
       request_id: opened.next.request_id,
       service_id: target.service.id,
       key_id: target.key.id,
-      model: bounded(route.upstreamModel, 160),
-      model_rewritten: frame.model !== route.upstreamModel,
+      model: bounded(target.upstreamModel, 160),
+      model_rewritten: frame.model !== target.upstreamModel,
       attempts: result.attempts,
     });
   }
@@ -998,12 +1005,29 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
           active_response: true,
           response_outcome_recorded: false,
         }));
+        const selectedTarget = targetFromRoute(route, current);
+        if (!selectedTarget) {
+          safeSend(
+            this.clientSocket(),
+            gatewayErrorEvent(
+              503,
+              "The bound upstream service or key is no longer available; reconnect the WebSocket",
+              "websocket_reconnect_required",
+            ),
+          );
+          await this.closeAll(
+            1012,
+            "upstream binding changed",
+            "binding_changed",
+          );
+          return;
+        }
         const upstream = this.upstreamSocket();
         if (
           !activated ||
           !safeSend(
             upstream,
-            rewriteResponseCreate(message, frame, route.upstreamModel),
+            rewriteResponseCreate(message, frame, selectedTarget.upstreamModel),
           )
         ) {
           await this.recordServiceFailureOnce();

@@ -10,6 +10,10 @@ export interface ServiceApiKeyConfig {
   priority: number;
 }
 
+export interface ServiceModelRouteConfig {
+  model: string;
+}
+
 export interface ServiceConfig {
   id: string;
   base_url: string;
@@ -17,6 +21,7 @@ export interface ServiceConfig {
   disabled: boolean;
   priority: number;
   models: string[];
+  model_routes?: Record<string, ServiceModelRouteConfig>;
   supports_websocket: boolean;
   supports_web_search: boolean;
   inject_claude_code_identity?: boolean;

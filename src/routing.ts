@@ -26,9 +26,7 @@ import type {
 
 export interface ModelRoute {
   requestedModel: string;
-  upstreamModel: string;
-  routeApplied: boolean;
-  targets: RoutedService[];
+  targets: ModelRoutedService[];
 }
 
 export interface RoutedService {
@@ -36,9 +34,19 @@ export interface RoutedService {
   keys: ServiceApiKeyConfig[];
 }
 
+export interface ModelRoutedService extends RoutedService {
+  upstreamModel: string;
+  routeApplied: boolean;
+}
+
 export interface ServiceTarget {
   service: ServiceConfig;
   key: ServiceApiKeyConfig;
+}
+
+export interface ModelServiceTarget extends ServiceTarget {
+  upstreamModel: string;
+  routeApplied: boolean;
 }
 
 export interface ServiceSelectionCheck extends ServiceAvailability {
@@ -56,7 +64,7 @@ export interface SelectionAffinity {
 }
 
 export interface ServiceSelection {
-  target?: ServiceTarget;
+  target?: ModelServiceTarget;
   checks: ServiceSelectionCheck[];
   keyChecks: KeySelectionCheck[];
   affinity?: SelectionAffinity;
@@ -84,20 +92,34 @@ export interface CatalogSelection {
   keyChecks: KeySelectionCheck[];
 }
 
-interface RouteAvailability {
-  candidates: RoutedService[];
+interface RouteAvailability<T extends RoutedService> {
+  candidates: T[];
   checks: ServiceSelectionCheck[];
   keyChecks: KeySelectionCheck[];
 }
 
-export function modelRoutesForClient(
+export function modelRoutesForService(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
+  service: ServiceConfig,
 ): Record<string, ModelRouteConfig> {
   return {
     ...config.model_routes,
     ...client.model_routes,
+    ...service.model_routes,
   };
+}
+
+export function modelRoutesByService(
+  config: GatewayConfig,
+  client: ClientApiKeyConfig,
+): Map<string, Record<string, ModelRouteConfig>> {
+  return new Map(
+    config.services.map((service) => [
+      service.id,
+      modelRoutesForService(config, client, service),
+    ]),
+  );
 }
 
 export function selectServiceApiKey(
@@ -132,10 +154,10 @@ function routedService(service: ServiceConfig): RoutedService | undefined {
   return keys.length > 0 ? { service, keys } : undefined;
 }
 
-function sortRoutedServices(
-  targets: RoutedService[],
+function sortRoutedServices<T extends RoutedService>(
+  targets: T[],
   config: GatewayConfig,
-): RoutedService[] {
+): T[] {
   const order = new Map(
     config.services.map((service, index) => [service.id, index]),
   );
@@ -162,32 +184,48 @@ export function resolveModelRoute(
   options: ResolveModelRouteOptions = {},
 ): ModelRoute {
   const allowedServices = new Set(client.services);
-  const modelRoutes = modelRoutesForClient(config, client);
-  const routeApplied = Object.hasOwn(modelRoutes, requestedModel);
-  const configuredRoute = routeApplied
-    ? modelRoutes[requestedModel]
-    : undefined;
-  const upstreamModel = configuredRoute?.model ?? requestedModel;
-  const targets = config.services.flatMap((service) => {
+  const targets = config.services.flatMap<ModelRoutedService>((service) => {
     if (
       service.disabled ||
       !allowedServices.has(service.id) ||
-      !routeAllowsService(configuredRoute, service.id) ||
-      !serviceSupportsModel(service, upstreamModel) ||
       (options.requiredCapability !== undefined &&
         !service[options.requiredCapability])
     ) {
       return [];
     }
+    const modelRoutes = modelRoutesForService(config, client, service);
+    const serviceRouteApplied = Object.hasOwn(modelRoutes, requestedModel);
+    const configuredRoute = serviceRouteApplied
+      ? modelRoutes[requestedModel]
+      : undefined;
+    const upstreamModel = configuredRoute?.model ?? requestedModel;
+    if (
+      !routeAllowsService(configuredRoute, service.id) ||
+      !serviceSupportsModel(service, upstreamModel)
+    ) {
+      return [];
+    }
     const target = routedService(service);
-    return target ? [target] : [];
+    return target
+      ? [{ ...target, upstreamModel, routeApplied: serviceRouteApplied }]
+      : [];
   });
   return {
     requestedModel,
-    upstreamModel,
-    routeApplied,
     targets: sortRoutedServices(targets, config),
   };
+}
+
+export function modelIsAvailableForClient(
+  config: GatewayConfig,
+  client: ClientApiKeyConfig,
+  requestedModel: string,
+  options: ResolveModelRouteOptions = {},
+): boolean {
+  return (
+    resolveModelRoute(config, client, requestedModel, options).targets.length >
+    0
+  );
 }
 
 export function allowedServiceCandidates(
@@ -205,11 +243,11 @@ export function allowedServiceCandidates(
   return sortRoutedServices(targets, config);
 }
 
-async function evaluateAvailability(
+async function evaluateAvailability<T extends RoutedService>(
   env: Env,
-  routedServices: RoutedService[],
+  routedServices: T[],
   scope: HealthScope,
-): Promise<RouteAvailability> {
+): Promise<RouteAvailability<T>> {
   const checks = await mapWithConcurrency(
     routedServices,
     SERVICE_FAN_OUT_CONCURRENCY,
@@ -240,14 +278,15 @@ async function evaluateAvailability(
       .filter((check) => check.available)
       .map((check) => `${check.service_id}\u0000${check.key_id}`),
   );
-  const candidates = routedServices.flatMap(({ service, keys }) => {
+  const candidates = routedServices.flatMap<T>((routed) => {
+    const { service, keys } = routed;
     if (!availableServiceIds.has(service.id)) {
       return [];
     }
     const availableKeys = keys.filter((key) =>
       availableKeyIds.has(`${service.id}\u0000${key.id}`),
     );
-    return availableKeys.length > 0 ? [{ service, keys: availableKeys }] : [];
+    return availableKeys.length > 0 ? [{ ...routed, keys: availableKeys }] : [];
   });
   return { candidates, checks, keyChecks };
 }
@@ -266,19 +305,26 @@ function affinityCandidates(
 }
 
 function targetByIds(
-  candidates: RoutedService[],
+  candidates: ModelRoutedService[],
   serviceId: string,
   keyId: string,
-): ServiceTarget | undefined {
+): ModelServiceTarget | undefined {
   const candidate = candidates.find(({ service }) => service.id === serviceId);
   const key = candidate?.keys.find((entry) => entry.id === keyId);
-  return candidate && key ? { service: candidate.service, key } : undefined;
+  return candidate && key
+    ? {
+        service: candidate.service,
+        key,
+        upstreamModel: candidate.upstreamModel,
+        routeApplied: candidate.routeApplied,
+      }
+    : undefined;
 }
 
 function selectRandomTarget(
-  candidates: RoutedService[],
+  candidates: ModelRoutedService[],
   random?: AffinityRandomSource,
-): ServiceTarget | undefined {
+): ModelServiceTarget | undefined {
   const selected = chooseAffinityCandidate(
     affinityCandidates(candidates),
     random,
@@ -387,7 +433,7 @@ export async function selectAvailableCatalogTargetsWithDetails(
 export async function targetIsAvailableForRoute(
   env: Env,
   route: ModelRoute,
-  target: ServiceTarget,
+  target: ModelServiceTarget,
   scope: HealthScope = "inference",
 ): Promise<boolean> {
   const routed = route.targets.find(

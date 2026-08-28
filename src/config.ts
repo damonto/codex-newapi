@@ -10,6 +10,7 @@ import type {
   ModelRouteConfig,
   ServiceApiKeyConfig,
   ServiceConfig,
+  ServiceModelRouteConfig,
   ServiceRetryConfig,
   WebSearchConfig,
 } from "./types.ts";
@@ -33,6 +34,7 @@ const SERVICE_FIELDS = new Set([
   "disabled",
   "priority",
   "models",
+  "model_routes",
   "supports_websocket",
   "supports_web_search",
   "inject_claude_code_identity",
@@ -46,6 +48,7 @@ const SERVICE_API_KEY_FIELDS = new Set([
 ]);
 const API_KEY_FIELDS = new Set(["id", "api_key", "services", "model_routes"]);
 const MODEL_ROUTE_FIELDS = new Set(["model", "services"]);
+const SERVICE_MODEL_ROUTE_FIELDS = new Set(["model"]);
 const RETRY_FIELDS = new Set(["status_codes", "delays_ms"]);
 const WEB_SEARCH_FIELDS = new Set([
   "mode",
@@ -212,9 +215,9 @@ function parseWebSearch(value: unknown): WebSearchConfig {
     value.base_url === undefined
       ? provider.defaultBaseUrl
       : validateBaseUrl(
-        requiredString(value.base_url, `${path}.base_url`),
-        `${path}.base_url`,
-      );
+          requiredString(value.base_url, `${path}.base_url`),
+          `${path}.base_url`,
+        );
   const apiKey = requiredString(value.api_key, `${path}.api_key`);
   const maxResults =
     value.max_results === undefined
@@ -292,6 +295,11 @@ function parseService(value: unknown, index: number): ServiceConfig {
     throw new ConfigError(`${path}.keys.id values must be unique`);
   }
   const retry = parseRetry(value.retry, `${path}.retry`);
+  const modelRoutes = parseServiceModelRoutes(
+    value.model_routes,
+    `${path}.model_routes`,
+  );
+  const models = stringArray(value.models, `${path}.models`);
   return {
     id,
     base_url: validateBaseUrl(
@@ -301,7 +309,10 @@ function parseService(value: unknown, index: number): ServiceConfig {
     keys,
     disabled: requiredBoolean(value.disabled, `${path}.disabled`),
     priority: requiredInteger(value.priority, `${path}.priority`),
-    models: stringArray(value.models, `${path}.models`),
+    models,
+    ...(Object.keys(modelRoutes).length > 0
+      ? { model_routes: modelRoutes }
+      : {}),
     supports_websocket: optionalBoolean(
       value.supports_websocket,
       `${path}.supports_websocket`,
@@ -316,6 +327,39 @@ function parseService(value: unknown, index: number): ServiceConfig {
     ),
     ...(retry === undefined ? {} : { retry }),
   };
+}
+
+function parseServiceModelRoutes(
+  value: unknown,
+  basePath: string,
+): Record<string, ServiceModelRouteConfig> {
+  if (value === undefined) {
+    return {};
+  }
+  if (!isRecord(value)) {
+    throw new ConfigError(`${basePath} must be an object`);
+  }
+  const routes: Array<[string, ServiceModelRouteConfig]> = [];
+  const clientModels = new Set<string>();
+  for (const [rawClientModel, rawRoute] of Object.entries(value)) {
+    const clientModel = requiredString(rawClientModel, `${basePath} key`);
+    const path = `${basePath}.${clientModel}`;
+    if (clientModels.has(clientModel)) {
+      throw new ConfigError(
+        `${basePath} contains duplicate normalized model ${clientModel}`,
+      );
+    }
+    clientModels.add(clientModel);
+    if (!isRecord(rawRoute)) {
+      throw new ConfigError(`${path} must be an object`);
+    }
+    rejectUnknownFields(rawRoute, SERVICE_MODEL_ROUTE_FIELDS, path);
+    routes.push([
+      clientModel,
+      { model: requiredString(rawRoute.model, `${path}.model`) },
+    ]);
+  }
+  return Object.fromEntries(routes);
 }
 
 function parseApiKey(value: unknown, index: number): ClientApiKeyConfig {
@@ -446,6 +490,17 @@ export function parseConfig(value: unknown): GatewayConfig {
   };
   for (const [clientModel, route] of Object.entries(modelRoutes)) {
     validateRoute(route, `model_routes.${clientModel}`);
+  }
+  for (const [index, service] of services.entries()) {
+    for (const [clientModel, route] of Object.entries(
+      service.model_routes ?? {},
+    )) {
+      if (!service.models.includes(route.model)) {
+        throw new ConfigError(
+          `services[${index}].model_routes.${clientModel}.model ${route.model} is not listed by service ${service.id}`,
+        );
+      }
+    }
   }
   for (const [index, entry] of apiKeys.entries()) {
     for (const [clientModel, route] of Object.entries(

@@ -986,7 +986,6 @@ test("gateway logs route application independently from model rewriting", async 
       name: "mapped route",
       model: "gpt-5.6-sol",
       configure: () => gatewayConfig(),
-      routeApplied: true,
       modelRewritten: true,
     },
     {
@@ -1000,14 +999,12 @@ test("gateway logs route application independently from model rewriting", async 
         };
         return config;
       },
-      routeApplied: true,
       modelRewritten: false,
     },
     {
       name: "unconfigured direct model",
       model: "review-model",
       configure: () => gatewayConfig(),
-      routeApplied: false,
       modelRewritten: false,
     },
   ];
@@ -1032,11 +1029,6 @@ test("gateway logs route application independently from model rewriting", async 
 
       assert.equal(captured.value.status, 200, testCase.name);
       assert.equal(captured.entries.length, 1, testCase.name);
-      assert.equal(
-        captured.entries[0].model.route_applied,
-        testCase.routeApplied,
-        testCase.name,
-      );
       assert.equal(
         captured.entries[0].upstream.model_rewritten,
         testCase.modelRewritten,
@@ -1107,6 +1099,104 @@ test("gateway applies per-key model routes and keeps other keys on global routes
       upstreamBodies.map((body) => body.model),
       ["review-model", "grok-4.5"],
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("gateway applies service model routes over per-key and global routes", async () => {
+  const originalFetch = globalThis.fetch;
+  const upstreamBodies = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    upstreamBodies.push(JSON.parse(await request.text()));
+    return new Response("ok", { status: 200 });
+  };
+  const config = gatewayConfig();
+  config.services[0].model_routes = {
+    "gpt-5.6-sol": { model: "review-model" },
+  };
+  config.api_keys[0].model_routes = {
+    "gpt-5.6-sol": { model: "grok-4.5" },
+  };
+
+  try {
+    clearConfigCacheForTests();
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      testEnv(config),
+      {},
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      upstreamBodies.map((body) => body.model),
+      ["review-model"],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("gateway rewrites by the selected service route when services differ", async () => {
+  const originalFetch = globalThis.fetch;
+  const upstreamBodies = [];
+  const upstreamUrls = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    upstreamBodies.push(JSON.parse(await request.text()));
+    upstreamUrls.push(request.url);
+    return new Response("ok", { status: 200 });
+  };
+  const config = gatewayConfig();
+  config.services.push({
+    id: "secondary",
+    base_url: "https://secondary.example/v1",
+    keys: [
+      {
+        id: "secondary-key",
+        api_key: "secondary-secret",
+        disabled: false,
+        priority: 100,
+      },
+    ],
+    disabled: false,
+    priority: 100,
+    supports_websocket: true,
+    supports_web_search: true,
+    models: ["grok-4.5", "review-model"],
+  });
+  config.api_keys[0].services = ["primary", "secondary"];
+  config.api_keys[0].model_routes = {
+    "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] },
+  };
+  config.services[0].model_routes = {
+    "gpt-5.6-sol": { model: "review-model" },
+  };
+
+  try {
+    clearConfigCacheForTests();
+    const response = await worker.fetch(
+      new Request("https://gateway.example/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer client-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      testEnv(config),
+      {},
+    );
+    assert.equal(response.status, 200);
+    assert.equal(upstreamUrls[0], "https://primary.example/v1/responses");
+    assert.equal(upstreamBodies[0].model, "review-model");
   } finally {
     globalThis.fetch = originalFetch;
   }

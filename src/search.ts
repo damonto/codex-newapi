@@ -1,7 +1,7 @@
 import { BodyTooLargeError, readBodyWithinLimit } from "./body.ts";
 import { jsonResponse, openAiError } from "./http.ts";
 import { errorMessage, type RequestLogContext } from "./log.ts";
-import { resolveModelRoute } from "./routing.ts";
+import { modelIsAvailableForClient } from "./routing.ts";
 import {
   executeSearchBatch,
   ProviderHttpError,
@@ -9,15 +9,15 @@ import {
   ProviderNetworkError,
 } from "./search-executor.ts";
 import {
-  parseSearchRequest,
-  type ParsedSearchRequest,
-  SearchRequestError,
-} from "./search-request.ts";
-import { codexOutput, codexResults } from "./search-response.ts";
-import {
   ProviderProtocolError,
   webSearchProviderFor,
 } from "./search-providers/index.ts";
+import {
+  parseSearchRequest,
+  SearchRequestError,
+  type ParsedSearchRequest,
+} from "./search-request.ts";
+import { codexOutput, codexResults } from "./search-response.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
 
 export const MAX_SEARCH_BODY_BYTES = 1024 * 1024;
@@ -76,8 +76,7 @@ export async function handleConfiguredWebSearch(
     );
   }
 
-  const route = resolveModelRoute(config, client, parsedRequest.model);
-  if (route.targets.length === 0) {
+  if (!modelIsAvailableForClient(config, client, parsedRequest.model)) {
     requestLog?.warn({ outcome: "model_not_found" });
     return openAiError(
       400,
@@ -89,9 +88,7 @@ export async function handleConfiguredWebSearch(
 
   requestLog?.set({
     model: {
-      requested: route.requestedModel,
-      upstream: route.upstreamModel,
-      route_applied: route.routeApplied,
+      requested: parsedRequest.model,
     },
     search: {
       mode: providerConfig.mode,

@@ -140,32 +140,42 @@ test("equal service key priorities are selected from the full tie group", () => 
 
 test("unconstrained routes resolve globally and services remain priority ordered", () => {
   const route = resolveModelRoute(config, client, "gpt-5.6-sol");
-  assert.equal(route.upstreamModel, "grok-4.5");
-  assert.equal(route.routeApplied, true);
   assert.deepEqual(
-    route.targets.map(({ service, keys }) => [
+    route.targets.map(({ service, keys, upstreamModel, routeApplied }) => [
       service.id,
       keys.map((key) => key.id),
+      upstreamModel,
+      routeApplied,
     ]),
     [
-      ["primary", ["primary-backup", "primary-key"]],
-      ["secondary", ["secondary-key"]],
+      ["primary", ["primary-backup", "primary-key"], "grok-4.5", true],
+      ["secondary", ["secondary-key"], "grok-4.5", true],
     ],
   );
 });
 
 test("an unconfigured upstream model is not marked as a route", () => {
   const route = resolveModelRoute(config, client, "review-model");
-  assert.equal(route.upstreamModel, "review-model");
-  assert.equal(route.routeApplied, false);
+  assert.deepEqual(
+    route.targets.map(({ upstreamModel, routeApplied }) => [
+      upstreamModel,
+      routeApplied,
+    ]),
+    [
+      ["review-model", false],
+      ["review-model", false],
+    ],
+  );
 });
 
 test("route service constraints override global service priority", () => {
   const route = resolveModelRoute(config, client, "codex-auto-review");
-  assert.equal(route.upstreamModel, "review-model");
   assert.deepEqual(
-    route.targets.map(({ service }) => service.id),
-    ["secondary"],
+    route.targets.map(({ service, upstreamModel }) => [
+      service.id,
+      upstreamModel,
+    ]),
+    [["secondary", "review-model"]],
   );
 });
 
@@ -259,11 +269,12 @@ test("a route can constrain a real upstream model name", () => {
     client,
     "grok-4.5",
   );
-  assert.equal(route.upstreamModel, "grok-4.5");
-  assert.equal(route.routeApplied, true);
   assert.deepEqual(
-    route.targets.map(({ service }) => service.id),
-    ["secondary"],
+    route.targets.map(({ service, upstreamModel }) => [
+      service.id,
+      upstreamModel,
+    ]),
+    [["secondary", "grok-4.5"]],
   );
 });
 
@@ -292,11 +303,12 @@ test("per-key routes override global routes for the same model", () => {
     },
     "gpt-5.6-sol",
   );
-  assert.equal(route.upstreamModel, "review-model");
-  assert.equal(route.routeApplied, true);
   assert.deepEqual(
-    route.targets.map(({ service }) => service.id),
-    ["secondary"],
+    route.targets.map(({ service, upstreamModel }) => [
+      service.id,
+      upstreamModel,
+    ]),
+    [["secondary", "review-model"]],
   );
 });
 
@@ -310,11 +322,15 @@ test("per-key routes leave unconfigured models on the global routes", () => {
     },
   };
   const routed = resolveModelRoute(config, keyClient, "gpt-5.6-sol");
-  assert.equal(routed.upstreamModel, "grok-4.5");
-  assert.equal(routed.routeApplied, true);
   assert.deepEqual(
-    routed.targets.map(({ service }) => service.id),
-    ["primary", "secondary"],
+    routed.targets.map(({ service, upstreamModel }) => [
+      service.id,
+      upstreamModel,
+    ]),
+    [
+      ["primary", "grok-4.5"],
+      ["secondary", "grok-4.5"],
+    ],
   );
 });
 
@@ -325,10 +341,15 @@ test("per-key routes apply only to the configured client", () => {
     services: ["primary", "secondary"],
   };
   const routed = resolveModelRoute(config, otherClient, "gpt-5.6-sol");
-  assert.equal(routed.upstreamModel, "grok-4.5");
   assert.deepEqual(
-    routed.targets.map(({ service }) => service.id),
-    ["primary", "secondary"],
+    routed.targets.map(({ service, upstreamModel }) => [
+      service.id,
+      upstreamModel,
+    ]),
+    [
+      ["primary", "grok-4.5"],
+      ["secondary", "grok-4.5"],
+    ],
   );
 });
 
@@ -342,8 +363,90 @@ test("per-key route services are intersected with client service access", () => 
     },
   };
   const route = resolveModelRoute(config, keyClient, "gpt-5.6-sol");
-  assert.equal(route.upstreamModel, "review-model");
   assert.deepEqual(route.targets, []);
+});
+
+test("service routes override per-key and global routes per service", () => {
+  const serviceRoutes = {
+    ...config,
+    services: config.services.map((service) => ({
+      ...service,
+      model_routes:
+        service.id === "primary"
+          ? { "gpt-5.6-sol": { model: "review-model" } }
+          : { "gpt-5.6-sol": { model: "grok-4.5" } },
+    })),
+  };
+  const route = resolveModelRoute(serviceRoutes, client, "gpt-5.6-sol");
+  assert.deepEqual(
+    route.targets.map(({ service, upstreamModel }) => [
+      service.id,
+      upstreamModel,
+    ]),
+    [
+      ["primary", "review-model"],
+      ["secondary", "grok-4.5"],
+    ],
+  );
+});
+
+test("service routes override lower layers even when the lower route constrains services", () => {
+  const serviceRoutes = {
+    ...config,
+    services: config.services.map((service) => ({
+      ...service,
+      model_routes:
+        service.id === "primary"
+          ? { "gpt-5.6-sol": { model: "review-model" } }
+          : undefined,
+    })),
+  };
+  const keyClient = {
+    id: "client",
+    api_key: "client",
+    services: ["primary", "secondary"],
+    model_routes: {
+      "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] },
+    },
+  };
+  const route = resolveModelRoute(serviceRoutes, keyClient, "gpt-5.6-sol");
+  assert.deepEqual(
+    route.targets.map(({ service, upstreamModel }) => [
+      service.id,
+      upstreamModel,
+    ]),
+    [
+      ["primary", "review-model"],
+      ["secondary", "grok-4.5"],
+    ],
+  );
+});
+
+test("a service route can hide a model from that service only", () => {
+  const route = resolveModelRoute(
+    {
+      ...config,
+      services: config.services.map((service) => ({
+        ...service,
+        model_routes:
+          service.id === "primary"
+            ? { "grok-4.5": { model: "review-model" } }
+            : undefined,
+      })),
+    },
+    client,
+    "grok-4.5",
+  );
+  assert.deepEqual(
+    route.targets.map(({ service, upstreamModel }) => [
+      service.id,
+      upstreamModel,
+    ]),
+    [
+      ["primary", "review-model"],
+      ["secondary", "grok-4.5"],
+    ],
+  );
 });
 
 test("disabled services are excluded before priority and health selection", async () => {

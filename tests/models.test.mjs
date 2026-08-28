@@ -26,9 +26,10 @@ const results = [
 ];
 
 test("standard aggregation adds a route without hiding the upstream model", () => {
-  const models = aggregateStandardModels(results, {
-    "gpt-5.6-sol": { model: "grok-4.5" },
-  });
+  const models = aggregateStandardModels(
+    results,
+    new Map([["primary", { "gpt-5.6-sol": { model: "grok-4.5" } }]]),
+  );
   assert.deepEqual(
     models.map((model) => model.id),
     ["grok-4.5", "gpt-5.6-sol"],
@@ -36,9 +37,15 @@ test("standard aggregation adds a route without hiding the upstream model", () =
 });
 
 test("standard aggregation honors route service constraints", () => {
-  const models = aggregateStandardModels(results, {
-    "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] },
-  });
+  const models = aggregateStandardModels(
+    results,
+    new Map([
+      [
+        "primary",
+        { "gpt-5.6-sol": { model: "grok-4.5", services: ["secondary"] } },
+      ],
+    ]),
+  );
   assert.deepEqual(
     models.map((model) => model.id),
     ["grok-4.5"],
@@ -49,7 +56,10 @@ test("a self-route hides a model supplied only by disallowed services", () => {
   const routes = {
     "grok-4.5": { model: "grok-4.5", services: ["secondary"] },
   };
-  assert.deepEqual(aggregateStandardModels(results, routes), []);
+  assert.deepEqual(
+    aggregateStandardModels(results, new Map([["primary", routes]])),
+    [],
+  );
 
   const secondaryResults = [
     {
@@ -58,8 +68,51 @@ test("a self-route hides a model supplied only by disallowed services", () => {
     },
   ];
   assert.deepEqual(
-    aggregateStandardModels(secondaryResults, routes).map((model) => model.id),
+    aggregateStandardModels(
+      secondaryResults,
+      new Map([["secondary", routes]]),
+    ).map((model) => model.id),
     ["grok-4.5"],
+  );
+});
+
+test("standard aggregation resolves routes per service", () => {
+  const primaryResults = [
+    {
+      service: { id: "primary", models: ["review-model", "grok-4.5"] },
+      success: true,
+      models: [
+        {
+          id: "review-model",
+          raw: { id: "review-model", object: "model", owned_by: "primary" },
+        },
+        {
+          id: "grok-4.5",
+          raw: { id: "grok-4.5", object: "model", owned_by: "newapi" },
+        },
+      ],
+    },
+    {
+      service: { id: "secondary", models: ["grok-4.5"] },
+      success: true,
+      models: [
+        {
+          id: "grok-4.5",
+          raw: { id: "grok-4.5", object: "model", owned_by: "newapi" },
+        },
+      ],
+    },
+  ];
+  const models = aggregateStandardModels(
+    primaryResults,
+    new Map([
+      ["primary", { "gpt-5.6-sol": { model: "review-model" } }],
+      ["secondary", { "gpt-5.6-sol": { model: "grok-4.5" } }],
+    ]),
+  );
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ["review-model", "gpt-5.6-sol", "grok-4.5"],
   );
 });
 
@@ -325,6 +378,62 @@ test("model catalogs reflect each client's per-key model routes", async () => {
     assert.deepEqual(
       (await second.json()).data.map((model) => model.id),
       ["model", "global-alias"],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("model catalogs reflect service model routes over per-key and global routes", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  config.api_keys = [
+    {
+      id: "client-a",
+      api_key: "client-a",
+      services: ["service-0"],
+      model_routes: {
+        "per-key-alias": { model: "model" },
+        "client-alias": { model: "model" },
+      },
+    },
+  ];
+  config.model_routes = {
+    "global-alias": { model: "model" },
+    "client-alias": { model: "model" },
+  };
+  config.services[0].model_routes = {
+    "service-alias": { model: "model" },
+    "client-alias": { model: "model" },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ data: [{ id: "model", object: "model" }] });
+  const { env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          authorization: "Bearer client-a",
+          "user-agent": "OpenAI-SDK",
+        },
+      }),
+      env,
+      config,
+      config.api_keys[0],
+      "test",
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      (await response.json()).data.map((model) => model.id),
+      [
+        "model",
+        "global-alias",
+        "client-alias",
+        "per-key-alias",
+        "service-alias",
+      ],
     );
   } finally {
     globalThis.fetch = originalFetch;

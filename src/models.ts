@@ -30,7 +30,7 @@ import codexCatalog from "./models.json" with { type: "json" };
 import { requestProtocol } from "./protocol.ts";
 import {
   allowedServiceCandidates,
-  modelRoutesForClient,
+  modelRoutesByService,
   selectAvailableCatalogTargetsWithDetails,
   type RoutedService,
   type ServiceTarget,
@@ -75,6 +75,51 @@ interface ModelsCacheEntry {
   payload: JsonObject;
 }
 
+class ModelsCache {
+  private readonly entries = new Map<string, ModelsCacheEntry>();
+
+  constructor(private readonly maxEntries = 128) {}
+
+  read(key: string, now = Date.now()): JsonObject | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) {
+      return undefined;
+    }
+    if (entry.expiresAt <= now) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return entry.payload;
+  }
+
+  write(
+    key: string,
+    payload: JsonObject,
+    ttlMs: number,
+    now = Date.now(),
+  ): void {
+    if (ttlMs <= 0) {
+      return;
+    }
+    for (const [entryKey, entry] of this.entries) {
+      if (entry.expiresAt <= now) {
+        this.entries.delete(entryKey);
+      }
+    }
+    if (this.entries.size >= this.maxEntries) {
+      const oldestKey = this.entries.keys().next().value;
+      if (typeof oldestKey === "string") {
+        this.entries.delete(oldestKey);
+      }
+    }
+    this.entries.set(key, { expiresAt: now + ttlMs, payload });
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+}
+
 interface ModelsCollectionResult {
   payload: JsonObject;
   partialSuccess: boolean;
@@ -92,7 +137,7 @@ class ModelsRequestError extends Error {
   }
 }
 
-const modelsCache = new Map<string, ModelsCacheEntry>();
+const modelsCache = new ModelsCache();
 
 // The Codex catalog does not publish release dates or per-model max output
 // limits. Claude Code treats 32k as the default max_tokens for unknown
@@ -329,7 +374,7 @@ function exposedClientModels(
 
 export function aggregateStandardModels(
   results: ServiceModelsResult[],
-  routes: Record<string, ModelRouteConfig>,
+  routesByService: Map<string, Record<string, ModelRouteConfig>>,
 ): JsonObject[] {
   const merged = new Map<string, JsonObject>();
 
@@ -341,7 +386,7 @@ export function aggregateStandardModels(
       const clientModels = exposedClientModels(
         result.service,
         model.id,
-        routes,
+        routesByService.get(result.service.id) ?? {},
       );
       for (const clientModel of clientModels) {
         if (clientModel === "codex-auto-review") {
@@ -359,7 +404,7 @@ export function aggregateStandardModels(
 function codexModelIds(
   standardModels: JsonObject[],
   results: ServiceModelsResult[],
-  routes: Record<string, ModelRouteConfig>,
+  routesByService: Map<string, Record<string, ModelRouteConfig>>,
 ): Set<string> {
   const ids = new Set(
     standardModels
@@ -374,7 +419,7 @@ function codexModelIds(
       for (const clientModel of exposedClientModels(
         result.service,
         model.id,
-        routes,
+        routesByService.get(result.service.id) ?? {},
       )) {
         ids.add(clientModel);
       }
@@ -398,7 +443,9 @@ export function isCodexUserAgent(request: Request): boolean {
 }
 
 export function isClaudeUserAgent(request: Request): boolean {
-  return request.headers.get("user-agent")?.toLowerCase().includes("claude") ?? false;
+  return (
+    request.headers.get("user-agent")?.toLowerCase().includes("claude") ?? false
+  );
 }
 
 export function modelsFormatFor(request: Request): ModelsFormat {
@@ -430,12 +477,12 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
     catalog?.supported_reasoning_levels,
   )
     ? (catalog.supported_reasoning_levels as unknown[])
-      .filter(
-        (entry): entry is { effort?: unknown } =>
-          typeof entry === "object" && entry !== null,
-      )
-      .map((entry) => entry.effort)
-      .filter((effort): effort is string => typeof effort === "string")
+        .filter(
+          (entry): entry is { effort?: unknown } =>
+            typeof entry === "object" && entry !== null,
+        )
+        .map((entry) => entry.effort)
+        .filter((effort): effort is string => typeof effort === "string")
     : [];
   const supportsEffort = supportedEffortLevels.length > 0;
   const maxInputTokens =
@@ -544,44 +591,6 @@ async function modelsCacheKey(
   return hashText(vary);
 }
 
-function readModelsCache(
-  key: string,
-  now = Date.now(),
-): JsonObject | undefined {
-  const entry = modelsCache.get(key);
-  if (!entry) {
-    return undefined;
-  }
-  if (entry.expiresAt <= now) {
-    modelsCache.delete(key);
-    return undefined;
-  }
-  return entry.payload;
-}
-
-function writeModelsCache(
-  key: string,
-  payload: JsonObject,
-  ttlMs: number,
-): void {
-  if (ttlMs <= 0) {
-    return;
-  }
-  const now = Date.now();
-  for (const [entryKey, entry] of modelsCache) {
-    if (entry.expiresAt <= now) {
-      modelsCache.delete(entryKey);
-    }
-  }
-  if (modelsCache.size >= 128) {
-    const oldestKey = modelsCache.keys().next().value;
-    if (typeof oldestKey === "string") {
-      modelsCache.delete(oldestKey);
-    }
-  }
-  modelsCache.set(key, { expiresAt: now + ttlMs, payload });
-}
-
 export function clearModelsCacheForTests(): void {
   modelsCache.clear();
 }
@@ -665,9 +674,14 @@ async function collectModels(
     );
   }
 
-  const modelRoutes = modelRoutesForClient(config, client);
-  const standardModels = aggregateStandardModels(results, modelRoutes);
-  const payload = modelsPayload(standardModels, results, modelRoutes, format);
+  const routesByService = modelRoutesByService(config, client);
+  const standardModels = aggregateStandardModels(results, routesByService);
+  const payload = modelsPayload(
+    standardModels,
+    results,
+    routesByService,
+    format,
+  );
   return {
     payload,
     partialSuccess: upstreamErrors.length > 0,
@@ -677,26 +691,25 @@ async function collectModels(
 function modelsPayload(
   standardModels: JsonObject[],
   results: ServiceModelsResult[],
-  routes: Record<string, ModelRouteConfig>,
+  routesByService: Map<string, Record<string, ModelRouteConfig>>,
   format: ModelsFormat,
 ): JsonObject {
   switch (format) {
     case "codex":
       return {
         models: aggregateCodexModels(
-          codexModelIds(standardModels, results, routes),
+          codexModelIds(standardModels, results, routesByService),
         ),
       };
-    case "anthropic":
-      {
-        const data = standardModels.map(anthropicModelInfo);
-        return {
-          data,
-          has_more: false,
-          first_id: data[0]?.id ?? null,
-          last_id: data.at(-1)?.id ?? null,
-        };
-      }
+    case "anthropic": {
+      const data = standardModels.map(anthropicModelInfo);
+      return {
+        data,
+        has_more: false,
+        first_id: data[0]?.id ?? null,
+        last_id: data.at(-1)?.id ?? null,
+      };
+    }
     case "openai":
       return { object: "list", data: standardModels };
   }
@@ -729,7 +742,7 @@ export async function handleModels(
   });
   const cacheKey = await modelsCacheKey(request, config, client, format);
 
-  const cachedPayload = ttlMs > 0 ? readModelsCache(cacheKey) : undefined;
+  const cachedPayload = ttlMs > 0 ? modelsCache.read(cacheKey) : undefined;
   if (cachedPayload) {
     requestLog?.mergeSection("catalog", { cache: "hit" });
     return jsonResponse(cachedPayload);
@@ -752,7 +765,7 @@ export async function handleModels(
     if (result.partialSuccess) {
       requestLog?.warn({ outcome: "partial_success" });
     }
-    writeModelsCache(cacheKey, result.payload, ttlMs);
+    modelsCache.write(cacheKey, result.payload, ttlMs);
     return jsonResponse(result.payload);
   } catch (error) {
     if (error instanceof ModelsRequestError) {

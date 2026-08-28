@@ -32,6 +32,25 @@
           }
         }
       }
+    },
+    "service_model_routes": {
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     }
   },
   "required": [
@@ -112,6 +131,9 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "model_routes": {
+            "$ref": "#/$defs/service_model_routes"
           },
           "supports_websocket": {
             "type": "boolean",

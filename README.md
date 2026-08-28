@@ -9,7 +9,7 @@ Use several upstream services through one Cloudflare Workers endpoint. It works 
 - Combines multiple upstream services behind one address.
 - Routes models by priority and controls access with client API keys.
 - Supports multiple upstream API keys per service with independent cooldowns.
-- Supports client-facing model routes with optional service constraints.
+- Supports layered client-facing model routes at service, API key, and global scope.
 - Supports Codex Image Gen through configured `gpt-image-2` services.
 - Proxies Codex Responses WebSockets and remote compaction, and can proxy or adapt standalone search.
 - Keeps a session on the same service/key while it remains the highest-priority available target.
@@ -73,6 +73,11 @@ npm run deploy
       "supports_websocket": true,
       "supports_web_search": true,
       "models": ["grok-4.5", "gpt-image-2"],
+      "model_routes": {
+        "client-model": {
+          "model": "gpt-image-2"
+        }
+      },
       "retry": {
         "status_codes": [429],
         "delays_ms": [250, 500, 1000]
@@ -106,6 +111,7 @@ npm run deploy
 - `services[].supports_websocket`: whether the service can receive Responses WebSocket connections. Defaults to `false` when omitted.
 - `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests in `proxy` mode. Defaults to `false` when omitted.
 - `services[].inject_claude_code_identity`: injects the Claude Code SDK client identity into `/v1/messages` requests routed through this service. This adds the `claude-code-20250219` beta header, the CLI `user-agent` and `x-app` headers, the `system` agent marker, and `metadata.user_id` (a JSON string with `device_id`/`session_id` when absent). Defaults to `false` when omitted; enable it only for Anthropic-compatible gateways that require Claude Code clients.
+- `services[].model_routes`: optional client-facing routes scoped to this service. Each route has only a `model` field, which must be listed in the service's `models`. Service routes override the per-key and global routes for the same client-facing model.
 - `api_keys`: keys used by your clients and the services each key may access. Each entry requires a globally unique, non-sensitive `id`. An entry may also include optional `model_routes` that override the global routes for that key.
 - `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services. Each `api_keys[]` entry may provide its own `model_routes`; per-key entries override the global route for the same client-facing model, while unconfigured models fall back to the global routes.
 - `web_search.mode`: selects standalone search behavior. `proxy` (the default) forwards `/v1/alpha/search` to a `supports_web_search` upstream service; `tavily` and `exa` call the configured provider directly and never fall back to proxy.
@@ -138,7 +144,9 @@ A client API key can override individual global routes by adding `model_routes` 
 }
 ```
 
-The per-key map uses the same shape and validation as the global `model_routes` and is merged per model: a model configured for the key overrides the global route of the same name, and every other model falls back to the global map. Per-key routes affect both request routing and the `/v1/models` catalog shown to that client.
+The per-key map uses the same shape and validation as the global `model_routes` and is merged per model: a model configured for the key overrides the global route of the same name, and every other model falls back to the global map.
+
+Routes are resolved independently for each candidate service with the priority `services[].model_routes` > `api_keys[].model_routes` > `model_routes`. Because service routes apply only to their own service, they do not accept a `services` field. A service route can map the same client-facing model to a different upstream model than another service, and the selected service's route is used for request rewriting. All three layers affect both request routing and the `/v1/models` catalog shown to that client.
 
 In `proxy` mode, standalone search selects only services with `supports_web_search: true`. Responses WebSocket connections select only services with `supports_websocket: true`. These filters are applied before priority selection and session affinity; ordinary HTTP Responses and compact requests do not require either capability.
 
@@ -184,9 +192,9 @@ To adapt them to Exa:
 }
 ```
 
-Adapter modes call only the selected provider. They do not try an upstream service after a 404 or any other provider failure, and they do not switch between Tavily and Exa. `base_url` may be set for a compatible proxy; otherwise it defaults to `https://api.tavily.com` or `https://api.exa.ai`.
+Adapter modes never fall back to an upstream service after a 404 or any other provider failure, and they never switch between Tavily and Exa. `base_url` may be set for a compatible proxy; otherwise it defaults to `https://api.tavily.com` or `https://api.exa.ai`.
 
-Tavily and Exa modes support `commands.search_query` with up to four queries, including per-query `domains` and `recency` from 0 to 3650 days, plus global allowed/blocked domain filters. The Codex `response_length` hint is accepted and validated as `short`, `medium`, or `long`; provider result count and cost remain controlled by `web_search.max_results`. Tavily accepts up to 300 included and 150 excluded domains; Exa accepts up to 1200 of each. Codex commands that require a full browsing backend, including `image_query`, `open`, `click`, `find`, and `screenshot`, return `unsupported_search_command`. Unknown command, query, setting, and filter fields are rejected instead of being silently ignored. Codex `allowed_callers` and `external_web_access` metadata are validated but do not change the provider selected by the gateway configuration. The requested model must still be available to the authenticated client API key, but adapter requests do not participate in service health, retries, or session affinity.
+Tavily and Exa modes support up to four `commands.search_query` entries with per-query `domains` and `recency` (0–3650 days) filters, plus global domain filters. Tavily accepts up to 300 included and 150 excluded domains; Exa accepts up to 1200 of each. The Codex `response_length` hint is validated as `short`, `medium`, or `long`; result count stays controlled by `web_search.max_results`. Commands requiring a full browsing backend (`image_query`, `open`, `click`, `find`, `screenshot`) return `unsupported_search_command`, and unknown fields are rejected rather than ignored. Codex `allowed_callers` and `external_web_access` metadata are validated but do not change provider selection. The requested model must still be available to the client API key, but adapter requests do not participate in service health, retries, or session affinity.
 
 Adapter responses are limited to 2 MiB per query and 4 MiB for the complete request batch. At most two provider queries run concurrently; crossing either response budget cancels the remaining batch and returns `web_search_invalid_response`.
 
@@ -202,7 +210,7 @@ Every service must declare a non-empty `keys` array, although all entries may be
 
 Client key IDs appear as `client_key_id` in authenticated request summaries. Upstream key IDs continue to appear in routing and upstream log sections. Use descriptive, non-sensitive labels and never copy credential values into `id`.
 
-To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through global or per-key `model_routes`.
+To use Image Gen, the client API key must be able to route `gpt-image-2`, either directly or through global, per-key, or per-service `model_routes`.
 
 The gateway accepts both versioned and unversioned forms of these inference paths:
 
@@ -214,12 +222,7 @@ The gateway accepts both versioned and unversioned forms of these inference path
 - `POST /images/generations`
 - `POST /images/edits`
 
-After changing `config.json`, upload it again. A Worker redeploy is not required:
-
-```bash
-npm run config:validate -- config.json
-npm run config:put -- config.json
-```
+After changing `config.json`, re-upload it with `npm run config:put -- config.json`; a Worker redeploy is not required.
 
 ## Use with Codex
 

@@ -399,6 +399,75 @@ test("parseConfig accepts per-key model routes alongside global routes", () => {
   assert.deepEqual(config.model_routes["gpt-5.6-sol"], { model: "grok-4.5" });
 });
 
+test("parseConfig accepts service model routes without a services field", () => {
+  const input = validConfig();
+  input.services[0].model_routes = {
+    "gpt-5.6-sol": { model: "review-model" },
+  };
+
+  const config = parseConfig(input);
+  assert.equal(Object.hasOwn(config.services[0], "model_routes"), true);
+  assert.deepEqual(config.services[0].model_routes, {
+    "gpt-5.6-sol": { model: "review-model" },
+  });
+});
+
+test("parseConfig omits the service model_routes field when absent or empty", () => {
+  for (const modelRoutes of [undefined, {}]) {
+    const input = validConfig();
+    if (modelRoutes === undefined) {
+      delete input.services[0].model_routes;
+    } else {
+      input.services[0].model_routes = modelRoutes;
+    }
+    const config = parseConfig(input);
+    assert.equal(Object.hasOwn(config.services[0], "model_routes"), false);
+  }
+});
+
+test("parseConfig rejects service route services constraints", () => {
+  const input = validConfig();
+  input.services[0].model_routes = {
+    "gpt-5.6-sol": { model: "review-model", services: ["primary"] },
+  };
+  assert.throws(
+    () => parseConfig(input),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message ===
+        "services[0].model_routes.gpt-5.6-sol.services is not supported",
+  );
+});
+
+test("parseConfig requires service routes to list models the service supports", () => {
+  const input = validConfig();
+  input.services[0].model_routes = {
+    "gpt-5.6-sol": { model: "missing-model" },
+  };
+  assert.throws(
+    () => parseConfig(input),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message ===
+        "services[0].model_routes.gpt-5.6-sol.model missing-model is not listed by service primary",
+  );
+});
+
+test("parseConfig rejects duplicate normalized service route models", () => {
+  const input = validConfig();
+  input.services[0].model_routes = {
+    "gpt-5.6-sol": { model: "review-model" },
+    "gpt-5.6-sol ": { model: "review-model" },
+  };
+  assert.throws(
+    () => parseConfig(input),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message ===
+        "services[0].model_routes contains duplicate normalized model gpt-5.6-sol",
+  );
+});
+
 test("parseConfig omits the per-key model_routes field when absent or empty", () => {
   for (const modelRoutes of [undefined, {}]) {
     const input = validConfig();
@@ -611,6 +680,14 @@ test("parseConfig rejects fields that are not declared by the schema", () => {
       "services[0].extra is not supported",
       (input) => {
         input.services[0].extra = true;
+      },
+    ],
+    [
+      "services[0].model_routes.gpt-5.6-sol.extra is not supported",
+      (input) => {
+        input.services[0].model_routes = {
+          "gpt-5.6-sol": { model: "review-model", extra: true },
+        };
       },
     ],
     [

@@ -18,6 +18,8 @@ This repository contains a TypeScript Cloudflare Worker that serves as an AI API
 - `services[].keys` is non-empty. Each key has an ID unique within its service plus an explicit `priority` and `disabled` flag; the legacy service-level `api_key` field is not supported.
 - `model_routes` is optional. Each route maps a client-facing model name to a real upstream `model` supported by at least one service.
 - `model_routes.*.services` is optional. When present, every referenced service must exist and list the route's upstream model; routing intersects this list with the authenticated client API key's allowed services.
+- `services[].model_routes` is optional. Each route maps a client-facing model name to a real upstream `model` listed in that service's `models`; service-level routes must not include a `services` field.
+- Resolve routes per candidate service with the priority `services[].model_routes` > `api_keys[].model_routes` > global `model_routes`. The selected service's route determines the rewritten upstream model.
 - `services[].retry` is optional and enables retries only when explicitly configured. Its `status_codes` and `delays_ms` arrays must both be empty or both be non-empty; the number of delays is the retry count.
 - Client API keys may only reference declared services.
 - Keep the JSON schema, `config.example.json`, parser validation, and tests consistent when changing configuration.

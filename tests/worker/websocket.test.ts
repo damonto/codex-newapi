@@ -492,6 +492,53 @@ test("responses WebSocket applies per-client model routes over the global routes
   await upstreamClosed;
 });
 
+test("responses WebSocket applies service model routes over per-client and global routes", async () => {
+  const config = gatewayConfig();
+  config.services[0].model_routes = {
+    "client-model": { model: "other-model" },
+  };
+  config.api_keys[0].model_routes = {
+    "client-model": { model: "upstream-model" },
+  };
+  await putConfig(config);
+  const upstream = upstreamPair();
+  let capturedRequest: Request | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedRequest =
+        input instanceof Request ? input : new Request(input, init);
+      return openUpstream(upstream);
+    }),
+  );
+
+  const { socket } = await openGatewaySocket("/v1/responses", {
+    authorization: "Bearer client-secret",
+  });
+  const upstreamFirstMessage = nextUpstreamMessage(upstream);
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
+  expect(JSON.parse((await upstreamFirstMessage) as string)).toMatchObject({
+    type: "response.create",
+    model: "other-model",
+  });
+  expect(capturedRequest?.url).toBe("https://primary.example/v1/responses");
+
+  const upstreamSecondMessage = nextUpstreamMessage(upstream);
+  socket.send(
+    JSON.stringify({ type: "response.create", model: "client-model" }),
+  );
+  expect(JSON.parse((await upstreamSecondMessage) as string)).toMatchObject({
+    type: "response.create",
+    model: "other-model",
+  });
+
+  const upstreamClosed = nextUpstreamClose(upstream);
+  socket.close(1000, "done");
+  await upstreamClosed;
+});
+
 test("responses WebSocket skips higher-priority services without WebSocket support", async () => {
   const config = gatewayConfig();
   config.services[0].supports_websocket = false;
