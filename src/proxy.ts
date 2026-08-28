@@ -325,9 +325,9 @@ export async function handleInference(
     ...(selection.affinity ? { affinity: selection.affinity } : {}),
     ...(target
       ? {
-        selected_service: target.service.id,
-        selected_key_id: target.key.id,
-      }
+          selected_service: target.service.id,
+          selected_key_id: target.key.id,
+        }
       : {}),
   };
   if (
@@ -356,15 +356,17 @@ export async function handleInference(
   const headers = forwardRequestHeaders(request, selectedKey.api_key);
   headers.delete("content-length");
   const modelRewritten = payload.model !== route.upstreamModel;
-  const identityInjected =
+  const claudeCodeIdentity =
     protocol === "anthropic" &&
     upstreamPath === "messages" &&
-    service.inject_claude_code_identity === true &&
-    injectClaudeCodeIdentity(payload);
-  if (identityInjected) {
+    service.inject_claude_code_identity === true;
+  const identityBodyChanged =
+    claudeCodeIdentity && injectClaudeCodeIdentity(payload);
+  if (claudeCodeIdentity) {
     applyClaudeCodeIdentityHeaders(headers);
   }
-  if (modelRewritten || identityInjected) {
+  const bodyChanged = modelRewritten || identityBodyChanged;
+  if (bodyChanged) {
     headers.delete("content-md5");
     headers.delete("digest");
     headers.delete("content-digest");
@@ -374,12 +376,14 @@ export async function handleInference(
     headers.set("content-type", "application/json");
   }
   let body: BodyInit = rawBody;
-  if (modelRewritten && !identityInjected) {
+  if (modelRewritten) {
+    // injectClaudeCodeIdentity mutated the same payload object, so the spread
+    // in rewriteModel serializes the injected identity as well.
     body = rewriteModel(originalText, payload, route.upstreamModel);
-  } else if (identityInjected) {
-    body = JSON.stringify(
-      modelRewritten ? { ...payload, model: route.upstreamModel } : payload,
-    );
+  } else if (identityBodyChanged) {
+    // Model is unchanged; rewriteModel would return the original text and drop
+    // the injected identity, so serialize the mutated payload directly.
+    body = JSON.stringify(payload);
   }
   const incomingUrl = new URL(request.url);
   const startedAt = performance.now();

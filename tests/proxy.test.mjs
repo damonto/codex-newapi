@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { injectClaudeCodeIdentity } from "../src/claude-code-identity.ts";
 import { ServiceHealthState } from "../src/health.ts";
 import {
   findClientApiKey,
@@ -352,82 +351,6 @@ test("model routes rewrite only the model and invalidate body digests", async ()
   });
 });
 
-test("injectClaudeCodeIdentity adds the SDK marker and metadata user id", () => {
-  const payload = {
-    model: "claude-opus-5",
-    system: "You are helpful.",
-    metadata: { account_uuid: "account-1" },
-  };
-  assert.equal(injectClaudeCodeIdentity(payload), true);
-  assert.deepEqual(payload.system, [
-    {
-      type: "text",
-      text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
-    },
-    { type: "text", text: "You are helpful." },
-  ]);
-  const userId = JSON.parse(payload.metadata.user_id);
-  assert.equal(typeof userId.device_id, "string");
-  assert.equal(typeof userId.session_id, "string");
-  assert.equal(userId.device_id.length > 0, true);
-  assert.equal(userId.session_id.length > 0, true);
-  assert.equal(payload.metadata.account_uuid, "account-1");
-});
-
-test("injectClaudeCodeIdentity preserves existing SDK marker and user metadata", () => {
-  const marker =
-    "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
-  const serializedUserId = JSON.stringify({
-    device_id: "device-1",
-    session_id: "session-1",
-    account_uuid: "account-1",
-  });
-  const payload = {
-    model: "claude-opus-5",
-    system: [{ type: "text", text: marker }],
-    metadata: {
-      user_id: serializedUserId,
-    },
-  };
-  assert.equal(injectClaudeCodeIdentity(payload), false);
-  assert.deepEqual(payload, {
-    model: "claude-opus-5",
-    system: [{ type: "text", text: marker }],
-    metadata: {
-      user_id: serializedUserId,
-    },
-  });
-});
-
-test("injectClaudeCodeIdentity parses a string metadata user id", () => {
-  const payload = {
-    model: "claude-opus-5",
-    metadata: { user_id: '{"device_id":"device-1"}' },
-  };
-  assert.equal(injectClaudeCodeIdentity(payload), true);
-  assert.deepEqual(JSON.parse(payload.metadata.user_id), {
-    device_id: "device-1",
-    session_id: JSON.parse(payload.metadata.user_id).session_id,
-  });
-  assert.equal(
-    typeof JSON.parse(payload.metadata.user_id).session_id,
-    "string",
-  );
-});
-
-test("injectClaudeCodeIdentity serializes an object user id to a JSON string", () => {
-  const payload = {
-    model: "claude-opus-5",
-    metadata: { user_id: { device_id: "device-1", account_uuid: "a1" } },
-  };
-  assert.equal(injectClaudeCodeIdentity(payload), true);
-  assert.equal(typeof payload.metadata.user_id, "string");
-  const userId = JSON.parse(payload.metadata.user_id);
-  assert.equal(userId.device_id, "device-1");
-  assert.equal(userId.account_uuid, "a1");
-  assert.equal(typeof userId.session_id, "string");
-});
-
 test("claude code identity is injected for /v1/messages on enabled services", async () => {
   const fixture = inferenceFixture();
   fixture.config.services[0].inject_claude_code_identity = true;
@@ -489,6 +412,117 @@ test("claude code identity is injected for /v1/messages on enabled services", as
   const userId = JSON.parse(captured.body.metadata.user_id);
   assert.equal(typeof userId.device_id, "string");
   assert.equal(typeof userId.session_id, "string");
+});
+
+test("claude code identity headers are added even when the body already has them", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.services[0].inject_claude_code_identity = true;
+  const marker =
+    "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+  const originalBody = JSON.stringify({
+    model: "model",
+    messages: [{ role: "user", content: "hi" }],
+    system: [{ type: "text", text: marker }],
+    metadata: {
+      user_id: JSON.stringify({
+        device_id: "device-1",
+        session_id: "session-1",
+      }),
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    captured = {
+      userAgent: request.headers.get("user-agent"),
+      xApp: request.headers.get("x-app"),
+      anthropicBeta: request.headers.get("anthropic-beta"),
+      body: await request.text(),
+    };
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await handleInference(
+      new Request("https://gateway.example/v1/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: originalBody,
+      }),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "messages",
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.userAgent, "claude-cli/2.1.246 (external, sdk-cli)");
+  assert.equal(captured.xApp, "cli");
+  assert.equal(captured.anthropicBeta, "claude-code-20250219");
+  assert.equal(captured.body, originalBody);
+});
+
+test("model rewrite keeps the injected claude code identity", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.services[0].inject_claude_code_identity = true;
+  fixture.config.services[0].models = ["upstream-model"];
+  fixture.config.model_routes = { "client-model": { model: "upstream-model" } };
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    captured = {
+      userAgent: request.headers.get("user-agent"),
+      xApp: request.headers.get("x-app"),
+      anthropicBeta: request.headers.get("anthropic-beta"),
+      body: JSON.parse(await request.text()),
+    };
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await handleInference(
+      new Request("https://gateway.example/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "client-model",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "messages",
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.userAgent, "claude-cli/2.1.246 (external, sdk-cli)");
+  assert.equal(captured.xApp, "cli");
+  assert.equal(captured.anthropicBeta, "claude-code-20250219");
+  assert.equal(captured.body.model, "upstream-model");
+  assert.equal(
+    captured.body.system[0].text,
+    "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+  );
+  assert.equal(
+    typeof JSON.parse(captured.body.metadata.user_id).device_id,
+    "string",
+  );
+  assert.equal(
+    typeof JSON.parse(captured.body.metadata.user_id).session_id,
+    "string",
+  );
 });
 
 test("claude code identity is not injected when the service flag is off", async () => {
