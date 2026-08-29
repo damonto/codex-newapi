@@ -304,7 +304,7 @@ async function openGatewaySocket(
 ): Promise<{
   socket: WebSocket;
   context: ExecutionContext;
-  proxy: DurableObjectStub;
+  proxy: DurableObjectStub<ResponsesWebSocketProxy>;
 }> {
   const existingIds = new Set(
     (await listDurableObjectIds(env.RESPONSES_WEBSOCKET)).map((id) =>

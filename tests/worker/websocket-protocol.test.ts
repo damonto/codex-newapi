@@ -10,7 +10,7 @@ function openSocketSpy(): {
   const socket = {
     readyState: WebSocket.OPEN,
     close,
-  } as WebSocket;
+  } as unknown as WebSocket;
   return { socket, close };
 }
 
