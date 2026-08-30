@@ -8,4 +8,5 @@ config.local.json
 .DS_Store
 .codex
 .claude
+.tmp*
 refs/
