@@ -8,10 +8,7 @@ import {
   FAILURE_WINDOW_MS,
   clearKeyHealth,
   clearServiceHealth,
-  isAnthropicHealthFailureStatus,
-  isAnthropicKeyHealthFailureStatus,
-  isHealthFailureStatus,
-  isKeyHealthFailureStatus,
+  healthFailureScope,
   keyIsAvailable,
   listCoolingHealth,
   listCoolingServices,
@@ -75,26 +72,40 @@ test("ten failures inside one five-minute window start a cooldown", async () => 
   assert.equal(typeof snapshot.cooling_until, "number");
 });
 
-test("only HTTP 400 and 503 are failure statuses", () => {
-  assert.equal(isHealthFailureStatus(400), true);
-  assert.equal(isHealthFailureStatus(503), true);
-  assert.equal(isHealthFailureStatus(401), false);
-  assert.equal(isHealthFailureStatus(429), false);
-  assert.equal(isHealthFailureStatus(500), false);
+test("OpenAI statuses resolve to one failure scope each", () => {
+  const scope = (status) => healthFailureScope(status, "openai");
+  assert.equal(scope(400), "service");
+  assert.equal(scope(503), "service");
+  assert.equal(scope(402), "key");
+  assert.equal(scope(403), "key");
+  assert.equal(scope(401), undefined);
+  assert.equal(scope(429), undefined);
+  assert.equal(scope(500), undefined);
 });
 
-test("HTTP 402 and 403 are immediate key failure statuses", () => {
-  assert.equal(isKeyHealthFailureStatus(402), true);
-  assert.equal(isKeyHealthFailureStatus(403), true);
-  assert.equal(isKeyHealthFailureStatus(400), false);
-  assert.equal(isKeyHealthFailureStatus(429), false);
+test("Anthropic statuses resolve to one failure scope each", () => {
+  const scope = (status) => healthFailureScope(status, "anthropic");
+  assert.equal(scope(500), "service");
+  assert.equal(scope(502), "service");
+  assert.equal(scope(503), "service");
+  assert.equal(scope(529), "service");
+  assert.equal(scope(401), "key");
+  assert.equal(scope(403), "key");
+  assert.equal(scope(402), undefined);
+  assert.equal(scope(400), undefined);
+  assert.equal(scope(429), undefined);
 });
 
-test("Anthropic overload and authentication statuses map to health failures", () => {
-  assert.equal(isAnthropicHealthFailureStatus(529), true);
-  assert.equal(isAnthropicHealthFailureStatus(503), false);
-  assert.equal(isAnthropicKeyHealthFailureStatus(401), true);
-  assert.equal(isAnthropicKeyHealthFailureStatus(403), false);
+test("statuses outside the failure maps are not counted", () => {
+  for (const protocol of ["openai", "anthropic"]) {
+    for (const status of [200, 201, 301, 404, 408, 418, 501]) {
+      assert.equal(
+        healthFailureScope(status, protocol),
+        undefined,
+        `status ${status} on ${protocol} should not affect health`,
+      );
+    }
+  }
 });
 
 test("a first key failure starts a 30-minute cooldown that expires normally", () => {

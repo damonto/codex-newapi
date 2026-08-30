@@ -2,8 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import { loadConfig } from "./config.ts";
 import {
-  isHealthFailureStatus,
-  isKeyHealthFailureStatus,
+  healthFailureScope,
   recordKeyFailure,
   recordServiceFailure,
   recordServiceSuccess,
@@ -176,15 +175,16 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
   private pendingClientBytes = 0;
   private clientMessages = Promise.resolve();
   private upstreamEvents = Promise.resolve();
-  private upstreamController?: AbortController;
-  private liveUpstreamSocket?: WebSocket;
+  // Assigned undefined to clear, so these are nullable rather than optional.
+  private upstreamController: AbortController | undefined;
+  private liveUpstreamSocket: WebSocket | undefined;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     configureLogging(this.env.LOG_LEVEL);
   }
 
-  async fetch(request: Request): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
     if (
       request.method !== "GET" ||
       request.headers.get("upgrade")?.toLowerCase() !== "websocket"
@@ -240,7 +240,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
-  async alarm(): Promise<void> {
+  override async alarm(): Promise<void> {
     const state = await this.loadState();
     if (state?.phase !== "awaiting_first_frame") {
       await this.ctx.storage.deleteAlarm();
@@ -469,9 +469,12 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     const payload =
       typeof message === "string" ? parseObject(message) : undefined;
     const status = payload ? errorStatus(payload) : undefined;
+    // This Durable Object only accepts Codex `response.create` frames, so every
+    // status it sees — in-band or from the HTTP handshake — is OpenAI-shaped.
+    const failureScope =
+      status === undefined ? undefined : healthFailureScope(status, "openai");
     if (
-      status !== undefined &&
-      isKeyHealthFailureStatus(status) &&
+      failureScope === "key" &&
       state.selected_service_id &&
       state.selected_key_id
     ) {
@@ -481,8 +484,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
         state.selected_key_id,
         state.request_id,
       );
-    }
-    if (status !== undefined && isHealthFailureStatus(status)) {
+    } else if (failureScope === "service") {
       await this.recordServiceFailureOnce();
     }
 
@@ -511,14 +513,15 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     }
     if (payload.type === "error") {
       await this.markResponseInactive();
+      // Codex frame status, as above.
+      const keyFailure =
+        status !== undefined && healthFailureScope(status, "openai") === "key";
       await this.closeAll(
         1011,
-        status !== undefined && isKeyHealthFailureStatus(status)
+        keyFailure
           ? "selected upstream key is cooling down"
           : "upstream returned an error",
-        status !== undefined && isKeyHealthFailureStatus(status)
-          ? "key_cooling_down"
-          : "upstream_error",
+        keyFailure ? "key_cooling_down" : "upstream_error",
       );
     }
   }
@@ -640,7 +643,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
         wait: (delayMs) => abortableDelay(delayMs, controller.signal),
         attemptTimeoutMs: UPSTREAM_HANDSHAKE_TIMEOUT_MS,
         onResponse: async (response) => {
-          if (isKeyHealthFailureStatus(response.status)) {
+          if (healthFailureScope(response.status, "openai") === "key") {
             await recordKeyFailure(
               this.env,
               target.service.id,
@@ -702,7 +705,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     const response = result.response;
     const socket = response.webSocket;
     if (response.status !== 101 || !socket) {
-      if (isHealthFailureStatus(response.status)) {
+      if (healthFailureScope(response.status, "openai") === "service") {
         await this.recordServiceFailureOnce();
       }
       const body = await upstreamErrorText(response);
@@ -1101,7 +1104,10 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     return this.clientMessages;
   }
 
-  webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
+  override webSocketMessage(
+    socket: WebSocket,
+    message: string | ArrayBuffer,
+  ): void {
     const role = this.socketRole(socket);
     if (role === "client") {
       this.ctx.waitUntil(this.enqueueClientMessage(message));
@@ -1112,7 +1118,7 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     );
   }
 
-  async webSocketClose(
+  override async webSocketClose(
     socket: WebSocket,
     code: number,
     reason: string,
@@ -1130,7 +1136,10 @@ export class ResponsesWebSocketProxy extends DurableObject<Env> {
     );
   }
 
-  async webSocketError(socket: WebSocket, error: unknown): Promise<void> {
+  override async webSocketError(
+    socket: WebSocket,
+    error: unknown,
+  ): Promise<void> {
     const role = this.socketRole(socket);
     const state = await this.loadState();
     logWarn("websocket.socket_error", {

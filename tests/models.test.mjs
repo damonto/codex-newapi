@@ -233,6 +233,122 @@ test("Anthropic model entries carry the ModelInfo fields Claude requires", async
   }
 });
 
+test("synthesized Anthropic entries carry client fields and do not guess context management", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  // grok-4.6 has supports_reasoning_summaries in the catalog, which used to be
+  // misread as support for the three Anthropic context-management betas.
+  config.services[0].models = ["grok-4.6"];
+  const client = config.api_keys[0];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ data: [{ id: "grok-4.6", object: "model" }] });
+  const { env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          "anthropic-version": "2023-06-01",
+          "user-agent": "claude-cli/1.0.0",
+        },
+      }),
+      env,
+      config,
+      client,
+      "test",
+    );
+    const entry = (await response.json()).data[0];
+    // Claude Desktop Discovery requires `name` even though the API reference
+    // for api.anthropic.com does not list it.
+    assert.equal(entry.name, "grok-4.6");
+    assert.equal(entry.display_name, "Grok 4.6");
+    assert.deepEqual(entry.capabilities.context_management, {
+      supported: false,
+      clear_thinking_20251015: { supported: false },
+      clear_tool_uses_20250919: { supported: false },
+      compact_20260112: { supported: false },
+    });
+    // Capabilities the catalog does describe are still derived.
+    assert.equal(entry.capabilities.effort.supported, true);
+    assert.equal(entry.capabilities.image_input.supported, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a real Anthropic ModelInfo upstream is passed through unchanged", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  config.services[0].models = ["claude-opus-5"];
+  const client = config.api_keys[0];
+  const upstreamEntry = {
+    id: "claude-opus-5",
+    type: "model",
+    display_name: "Claude Opus 5",
+    created_at: "2026-07-24T00:00:00Z",
+    max_input_tokens: 200000,
+    max_tokens: 64000,
+    capabilities: {
+      batch: { supported: true },
+      citations: { supported: true },
+      code_execution: { supported: true },
+      context_management: {
+        supported: true,
+        clear_thinking_20251015: { supported: true },
+        clear_tool_uses_20250919: { supported: true },
+        compact_20260112: { supported: true },
+      },
+      effort: {
+        supported: true,
+        low: { supported: true },
+        medium: { supported: true },
+        high: { supported: true },
+        max: { supported: true },
+        xhigh: { supported: true },
+      },
+      image_input: { supported: true },
+      pdf_input: { supported: true },
+      structured_outputs: { supported: true },
+      thinking: {
+        supported: true,
+        types: { adaptive: { supported: true }, enabled: { supported: true } },
+      },
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ data: [upstreamEntry] });
+  const { env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          "anthropic-version": "2023-06-01",
+          "user-agent": "claude-cli/1.0.0",
+        },
+      }),
+      env,
+      config,
+      client,
+      "test",
+    );
+    const entry = (await response.json()).data[0];
+    // The upstream's own ModelInfo wins over anything derived from the catalog:
+    // real created_at, real 64k output limit, real context management.
+    assert.equal(entry.created_at, "2026-07-24T00:00:00Z");
+    assert.equal(entry.max_tokens, 64000);
+    assert.equal(entry.max_input_tokens, 200000);
+    assert.equal(entry.capabilities.context_management.supported, true);
+    assert.equal(entry.capabilities.code_execution.supported, true);
+    // api.anthropic.com does not send `name`, so the gateway adds it for
+    // Claude Desktop Discovery without disturbing the rest of the ModelInfo.
+    assert.equal(entry.name, "claude-opus-5");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Anthropic model entries fall back conservatively outside the catalog", async () => {
   clearModelsCacheForTests();
   const config = modelConfig();
@@ -268,6 +384,53 @@ test("Anthropic model entries fall back conservatively outside the catalog", asy
     assert.equal(entry.capabilities.effort.supported, false);
     assert.equal(entry.capabilities.thinking.supported, false);
     assert.equal(entry.capabilities.context_management.supported, false);
+    // The 200k fallback is not a 1M context window.
+    assert.equal(entry.supports1m, false);
+    assert.equal(entry.prefer1m, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("only models with a 1M context window advertise the 1M flags", async () => {
+  clearModelsCacheForTests();
+  const config = modelConfig();
+  // grok-4.6 has a 1M context window in the catalog; gpt-5.6-sol has 872k.
+  config.services[0].models = ["grok-4.6", "gpt-5.6-sol"];
+  const client = config.api_keys[0];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      data: [
+        { id: "grok-4.6", object: "model" },
+        { id: "gpt-5.6-sol", object: "model" },
+      ],
+    });
+  const { env } = healthEnvironment();
+
+  try {
+    const response = await handleModels(
+      new Request("https://gateway.example/v1/models", {
+        headers: {
+          "x-api-key": "client",
+          "anthropic-version": "2023-06-01",
+          "user-agent": "claude-cli/1.0.0",
+        },
+      }),
+      env,
+      config,
+      client,
+      "test",
+    );
+    const body = await response.json();
+    const grok = body.data.find((entry) => entry.id === "grok-4.6");
+    const gpt = body.data.find((entry) => entry.id === "gpt-5.6-sol");
+    assert.equal(grok.max_input_tokens, 1048576);
+    assert.equal(grok.supports1m, true);
+    assert.equal(grok.prefer1m, true);
+    assert.equal(gpt.max_input_tokens, 872000);
+    assert.equal(gpt.supports1m, false);
+    assert.equal(gpt.prefer1m, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

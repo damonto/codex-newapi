@@ -1,9 +1,5 @@
 import type { ClientApiKeyConfig, ServiceConfig } from "./types.ts";
-import {
-  isAnthropicProtocol,
-  requestProtocol,
-  type ApiProtocol,
-} from "./protocol.ts";
+import { isAnthropicProtocol, type ApiProtocol } from "./protocol.ts";
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -76,16 +72,55 @@ export function jsonResponse(
   return new Response(JSON.stringify(value), { status, headers });
 }
 
+/** The closed set of error types the Anthropic API publishes. */
+export type AnthropicErrorType =
+  | "invalid_request_error"
+  | "authentication_error"
+  | "permission_error"
+  | "not_found_error"
+  | "request_too_large"
+  | "rate_limit_error"
+  | "api_error"
+  | "overloaded_error";
+
+/**
+ * Maps an HTTP status to the matching Anthropic error `type`. A status without a
+ * documented type falls back to `api_error` rather than inventing one that
+ * clients cannot branch on.
+ */
+export function anthropicErrorType(status: number): AnthropicErrorType {
+  switch (status) {
+    case 400:
+      return "invalid_request_error";
+    case 401:
+      return "authentication_error";
+    case 403:
+      return "permission_error";
+    case 404:
+      return "not_found_error";
+    case 413:
+      return "request_too_large";
+    case 429:
+      return "rate_limit_error";
+    case 503:
+    case 529:
+      return "overloaded_error";
+    default:
+      return "api_error";
+  }
+}
+
 export function anthropicError(
   status: number,
   message: string,
-  type = "invalid_request_error",
+  requestId?: string,
 ): Response {
   return jsonResponse(
     {
       type: "error",
+      ...(requestId ? { request_id: requestId } : {}),
       error: {
-        type,
+        type: anthropicErrorType(status),
         message,
       },
     },
@@ -112,22 +147,29 @@ export function openAiError(
   );
 }
 
+export interface ApiErrorOptions {
+  /** OpenAI error `type`. Anthropic derives its own type from the status. */
+  type?: string;
+  /** OpenAI-only diagnostic code; Anthropic error bodies have no `code`. */
+  code?: string;
+  /** Gateway request id, echoed in Anthropic error bodies for correlation. */
+  requestId?: string;
+}
+
 export function apiError(
   protocol: ApiProtocol,
   status: number,
   message: string,
-  type = "invalid_request_error",
-  code?: string,
+  options: ApiErrorOptions = {},
 ): Response {
-  const normalizedType =
-    isAnthropicProtocol(protocol) &&
-    status === 401 &&
-    type === "invalid_request_error"
-      ? "authentication_error"
-      : type;
   return isAnthropicProtocol(protocol)
-    ? anthropicError(status, message, normalizedType)
-    : openAiError(status, message, normalizedType, code);
+    ? anthropicError(status, message, options.requestId)
+    : openAiError(
+        status,
+        message,
+        options.type ?? "invalid_request_error",
+        options.code,
+      );
 }
 
 export function bearerToken(request: Request): string | undefined {
@@ -270,31 +312,9 @@ export function forwardRequestHeaders(
       headers.set(name, value);
     }
   });
-  return forwardCredentialHeaders(
-    headers,
-    request,
-    serviceApiKey,
-    requestProtocol(request),
-  );
-}
-
-function forwardCredentialHeaders(
-  headers: Headers,
-  request: Request,
-  serviceApiKey: string,
-  protocol: "openai" | "anthropic",
-): Headers {
-  if (protocol === "anthropic") {
-    for (const name of ["authorization", "x-api-key"]) {
-      if (request.headers.has(name)) {
-        headers.set(
-          name,
-          name === "authorization" ? `Bearer ${serviceApiKey}` : serviceApiKey,
-        );
-      }
-    }
-    return headers;
-  }
+  // Upstream services authenticate with a bearer token regardless of which
+  // credential header the client used, so the gateway always sends one. The
+  // client's own `x-api-key` is dropped by shouldStripRequestHeader.
   headers.set("authorization", `Bearer ${serviceApiKey}`);
   return headers;
 }

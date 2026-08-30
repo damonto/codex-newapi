@@ -3,8 +3,12 @@ import test from "node:test";
 
 import {
   applyClaudeCodeIdentityHeaders,
+  claudeCodeIdentityFor,
   injectClaudeCodeIdentity,
 } from "../src/claude-code-identity.ts";
+
+const identity = { deviceId: "device-uuid", sessionId: "session-uuid" };
+const withMetadata = { includeMetadata: true };
 
 test("injectClaudeCodeIdentity adds the SDK marker and metadata user id", () => {
   const payload = {
@@ -12,7 +16,7 @@ test("injectClaudeCodeIdentity adds the SDK marker and metadata user id", () => 
     system: "You are helpful.",
     metadata: { account_uuid: "account-1" },
   };
-  assert.equal(injectClaudeCodeIdentity(payload), true);
+  assert.equal(injectClaudeCodeIdentity(payload, identity, withMetadata), true);
   assert.deepEqual(payload.system, [
     {
       type: "text",
@@ -21,11 +25,46 @@ test("injectClaudeCodeIdentity adds the SDK marker and metadata user id", () => 
     { type: "text", text: "You are helpful." },
   ]);
   const userId = JSON.parse(payload.metadata.user_id);
-  assert.equal(typeof userId.device_id, "string");
-  assert.equal(typeof userId.session_id, "string");
-  assert.equal(userId.device_id.length > 0, true);
-  assert.equal(userId.session_id.length > 0, true);
+  assert.equal(userId.device_id, "device-uuid");
+  assert.equal(userId.session_id, "session-uuid");
   assert.equal(payload.metadata.account_uuid, "account-1");
+});
+
+test("injectClaudeCodeIdentity leaves metadata alone when the endpoint rejects it", () => {
+  // count_tokens accepts system but not metadata, and rejects unknown fields.
+  const payload = { model: "claude-opus-5", messages: [] };
+  assert.equal(
+    injectClaudeCodeIdentity(payload, identity, { includeMetadata: false }),
+    true,
+  );
+  assert.equal(Object.hasOwn(payload, "metadata"), false);
+  assert.equal(
+    payload.system[0].text,
+    "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+  );
+});
+
+test("claudeCodeIdentityFor is stable per client key and session", async () => {
+  const first = await claudeCodeIdentityFor("client-key", "session-a");
+  const second = await claudeCodeIdentityFor("client-key", "session-a");
+  assert.deepEqual(first, second);
+
+  // Version 8: name-derived, not random.
+  const uuidPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  assert.match(first.deviceId, uuidPattern);
+  assert.match(first.sessionId, uuidPattern);
+
+  const otherSession = await claudeCodeIdentityFor("client-key", "session-b");
+  assert.equal(otherSession.deviceId, first.deviceId);
+  assert.notEqual(otherSession.sessionId, first.sessionId);
+
+  const otherClient = await claudeCodeIdentityFor("other-key", "session-a");
+  assert.notEqual(otherClient.deviceId, first.deviceId);
+
+  const noSession = await claudeCodeIdentityFor("client-key");
+  assert.equal(noSession.deviceId, first.deviceId);
+  assert.deepEqual(noSession, await claudeCodeIdentityFor("client-key"));
 });
 
 test("injectClaudeCodeIdentity preserves existing SDK marker and user metadata", () => {
@@ -43,7 +82,10 @@ test("injectClaudeCodeIdentity preserves existing SDK marker and user metadata",
       user_id: serializedUserId,
     },
   };
-  assert.equal(injectClaudeCodeIdentity(payload), false);
+  assert.equal(
+    injectClaudeCodeIdentity(payload, identity, withMetadata),
+    false,
+  );
   assert.deepEqual(payload, {
     model: "claude-opus-5",
     system: [{ type: "text", text: marker }],
@@ -58,7 +100,7 @@ test("injectClaudeCodeIdentity parses a string metadata user id", () => {
     model: "claude-opus-5",
     metadata: { user_id: '{"device_id":"device-1"}' },
   };
-  assert.equal(injectClaudeCodeIdentity(payload), true);
+  assert.equal(injectClaudeCodeIdentity(payload, identity, withMetadata), true);
   assert.deepEqual(JSON.parse(payload.metadata.user_id), {
     device_id: "device-1",
     session_id: JSON.parse(payload.metadata.user_id).session_id,
@@ -74,7 +116,7 @@ test("injectClaudeCodeIdentity serializes an object user id to a JSON string", (
     model: "claude-opus-5",
     metadata: { user_id: { device_id: "device-1", account_uuid: "a1" } },
   };
-  assert.equal(injectClaudeCodeIdentity(payload), true);
+  assert.equal(injectClaudeCodeIdentity(payload, identity, withMetadata), true);
   assert.equal(typeof payload.metadata.user_id, "string");
   const userId = JSON.parse(payload.metadata.user_id);
   assert.equal(userId.device_id, "device-1");

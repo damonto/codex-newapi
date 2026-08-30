@@ -133,6 +133,19 @@ test("parseConfig accepts explicit service capability flags", () => {
   assert.equal(config.services[0].inject_claude_code_identity, true);
 });
 
+test("parseConfig rejects a service protocol field", () => {
+  // A service may serve either dialect, so the dialect is derived per request
+  // and cannot be declared here.
+  const input = validConfig();
+  input.services[0].protocol = "anthropic";
+  assert.throws(
+    () => parseConfig(input),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message === "services[0].protocol is not supported",
+  );
+});
+
 test("parseConfig rejects non-boolean service capability flags", () => {
   for (const field of [
     "supports_websocket",

@@ -395,7 +395,7 @@ export class SessionAffinity extends DurableObject<Env> {
     });
   }
 
-  async alarm(): Promise<void> {
+  override async alarm(): Promise<void> {
     const expired = await this.ctx.storage.transaction(async (transaction) => {
       const current = await transaction.get<unknown>(AFFINITY_STORAGE_KEY);
       if (!validRecord(current)) {

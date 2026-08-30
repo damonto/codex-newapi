@@ -110,7 +110,7 @@ npm run deploy
 - `services[].keys`: upstream credentials for one service. The highest-priority available key is used; equal priorities follow configuration order.
 - `services[].supports_websocket`: whether the service can receive Responses WebSocket connections. Defaults to `false` when omitted.
 - `services[].supports_web_search`: whether the service can receive standalone `/alpha/search` requests in `proxy` mode. Defaults to `false` when omitted.
-- `services[].inject_claude_code_identity`: injects the Claude Code SDK client identity into `/v1/messages` requests routed through this service. This adds the `claude-code-20250219` beta header, the CLI `user-agent` and `x-app` headers, the `system` agent marker, and `metadata.user_id` (a JSON string with `device_id`/`session_id` when absent). Defaults to `false` when omitted; enable it only for Anthropic-compatible gateways that require Claude Code clients.
+- `services[].inject_claude_code_identity`: injects the Claude Code SDK client identity into `/v1/messages` and `/v1/messages/count_tokens` requests routed through this service. Both paths get the `claude-code-20250219` beta header, the `x-app` header, and the `system` agent marker; a `user-agent` is added only when the client did not already send a `claude-cli/...` one. `/v1/messages` additionally gets `metadata.user_id` (a JSON string with `device_id`/`session_id` when absent), which `count_tokens` does not accept. The injected `device_id` is derived from the client API key and the `session_id` from the session, so they stay stable across turns. Defaults to `false` when omitted; enable it only for Anthropic-compatible gateways that require Claude Code clients.
 - `services[].model_routes`: optional client-facing routes scoped to this service. Each route has only a `model` field, which must be listed in the service's `models`. Service routes override the per-key and global routes for the same client-facing model.
 - `api_keys`: keys used by your clients and the services each key may access. Each entry requires a globally unique, non-sensitive `id`. An entry may also include optional `model_routes` that override the global routes for that key.
 - `model_routes`: optional client-facing routes. `model` is the real upstream model; optional `services` limits the route to those services. Each `api_keys[]` entry may provide its own `model_routes`; per-key entries override the global route for the same client-facing model, while unconfigured models fall back to the global routes.
@@ -150,7 +150,7 @@ Routes are resolved independently for each candidate service with the priority `
 
 In `proxy` mode, standalone search selects only services with `supports_web_search: true`. Responses WebSocket connections select only services with `supports_websocket: true`. These filters are applied before priority selection and session affinity; ordinary HTTP Responses and compact requests do not require either capability.
 
-Services are considered by highest available priority, with equal-priority services following configuration order. A session ID from the `session-id` header or `client_metadata.session_id` keeps subsequent requests on the same service/key while that target remains eligible, healthy, and at the highest available priority. If a higher-priority service becomes available, the next request moves the binding to the highest-priority service and one of its highest-priority keys. If the current service remains highest priority but a higher-priority key becomes available within it, the binding moves to that key. Equal priorities do not move an existing binding. In `proxy` mode, standalone search also accepts its top-level `id` as the lowest-priority session identifier. `thread-id` is not used for affinity.
+Services are considered by highest available priority, with equal-priority services following configuration order. A session ID from the `session-id` header, `client_metadata.session_id`, or the Anthropic `metadata.user_id` (whose JSON payload carries Claude Code's `session_id`) keeps subsequent requests on the same service/key while that target remains eligible, healthy, and at the highest available priority. If a higher-priority service becomes available, the next request moves the binding to the highest-priority service and one of its highest-priority keys. If the current service remains highest priority but a higher-priority key becomes available within it, the binding moves to that key. Equal priorities do not move an existing binding. In `proxy` mode, standalone search also accepts its top-level `id` as the lowest-priority session identifier. `thread-id` is not used for affinity.
 
 ### Standalone web search
 
@@ -198,7 +198,7 @@ Tavily and Exa modes support up to four `commands.search_query` entries with per
 
 Adapter responses are limited to 2 MiB per query and 4 MiB for the complete request batch. At most two provider queries run concurrently; crossing either response budget cancels the remaining batch and returns `web_search_invalid_response`.
 
-HTTP 402 and 403 responses immediately cool only the selected key for 30 minutes. Configured retries still use that same key and never switch service/key during the current request; the cooldown affects later requests. Service and key inference cooldowns can be listed with `GET /health`, cleared with `DELETE /health/{service_id}` or `DELETE /health/{service_id}/{key_id}`, and isolated catalog cooldowns use `scope=catalog`.
+Which statuses count against health depends on the dialect of the request, since one service may serve both. For an OpenAI-dialect request, 400 and 503 count against the service and 402 and 403 immediately cool the selected key. For an Anthropic-dialect request, 500, 502, 503, and 529 count against the service and 401 and 403 cool the key. A status affects at most one of the two, so a single response never records both. Configured retries still use that same key and never switch service/key during the current request; the cooldown affects later requests. Service and key inference cooldowns can be listed with `GET /health`, cleared with `DELETE /health/{service_id}` or `DELETE /health/{service_id}/{key_id}`, and isolated catalog cooldowns use `scope=catalog`.
 
 Session bindings are isolated by the authenticated client API key and can be managed through both versioned and unversioned paths:
 
@@ -221,6 +221,15 @@ The gateway accepts both versioned and unversioned forms of these inference path
 - `POST /chat/completions`
 - `POST /images/generations`
 - `POST /images/edits`
+
+The Anthropic Messages paths are accepted in their versioned form only, matching the Anthropic SDKs:
+
+- `POST /v1/messages`
+- `POST /v1/messages/count_tokens`
+
+A request is treated as Anthropic-protocol when it carries an `anthropic-version` header or targets a `/v1/messages` path. For the endpoints that belong to neither dialect (`/v1/models`, `/health`, `/sessions`) a Claude user agent selects Anthropic. Services never declare a dialect, because one upstream may serve both. Those requests receive Anthropic-shaped error bodies (`{"type": "error", "error": {"type", "message"}}`) with the `type` derived from the HTTP status, and `/v1/models` returns the Anthropic model-list shape. Client credentials are accepted from either `Authorization: Bearer` or `x-api-key`; upstream services always receive `Authorization: Bearer` with the selected service key.
+
+In the Anthropic model-list shape, an upstream that already returns a real `ModelInfo` (a `type: "model"` entry with a `capabilities` object) is passed through unchanged, so its own `created_at`, `max_tokens`, and capability flags are preserved. Only entries from upstreams that do not publish `ModelInfo` are synthesized from the bundled Codex catalog. Every entry carries `name`, which Claude Desktop Discovery requires; a passthrough entry gets it added only when the upstream did not send one. Synthesized entries also carry `supports1m`/`prefer1m` for Claude Code's 1M context window, and report `context_management` as unsupported because the Codex catalog has no equivalent for those beta strategies.
 
 After changing `config.json`, re-upload it with `npm run config:put -- config.json`; a Worker redeploy is not required.
 

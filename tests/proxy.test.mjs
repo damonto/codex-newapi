@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { ServiceHealthState } from "../src/health.ts";
 import {
+  anthropicErrorType,
+  apiError,
   findClientApiKey,
   forwardRequestHeaders,
   forwardWebSocketHeaders,
@@ -10,8 +12,8 @@ import {
 } from "../src/http.ts";
 import {
   handleInference,
-  rewriteModel,
   sessionIdForInference,
+  upstreamBody,
 } from "../src/proxy.ts";
 
 function inferenceFixture(retry) {
@@ -113,23 +115,46 @@ function inferenceRequest() {
   });
 }
 
-test("request JSON stays byte-for-byte equivalent when no mapping is needed", () => {
+test("request bytes are forwarded untouched when nothing changed", () => {
   const original = '{\n  "model": "grok-4.5",\n  "stream": true\n}';
-  assert.equal(
-    rewriteModel(original, JSON.parse(original), "grok-4.5"),
-    original,
-  );
+  const rawBody = new TextEncoder().encode(original);
+  const body = upstreamBody(rawBody, JSON.parse(original), "grok-4.5", false);
+  // The same buffer is forwarded, so whitespace and key order survive exactly.
+  assert.equal(body, rawBody);
+  assert.equal(new TextDecoder().decode(body), original);
 });
 
-test("mapping changes only the model value semantically", () => {
+test("a rewritten body changes only the model value semantically", () => {
   const original = '{"model":"gpt-5.6-sol","stream":true,"input":"hello"}';
-  const rewritten = JSON.parse(
-    rewriteModel(original, JSON.parse(original), "grok-4.5"),
+  const body = upstreamBody(
+    new TextEncoder().encode(original),
+    JSON.parse(original),
+    "grok-4.5",
+    true,
   );
-  assert.deepEqual(rewritten, {
+  assert.deepEqual(JSON.parse(body), {
     model: "grok-4.5",
     stream: true,
     input: "hello",
+  });
+});
+
+test("a rewritten body keeps payload mutations when the model is unchanged", () => {
+  // The identity injection mutates the parsed payload without touching the
+  // model. Serializing must still pick those mutations up.
+  const original = '{"model":"grok-4.5","messages":[]}';
+  const payload = JSON.parse(original);
+  payload.system = [{ type: "text", text: "marker" }];
+  const body = upstreamBody(
+    new TextEncoder().encode(original),
+    payload,
+    "grok-4.5",
+    true,
+  );
+  assert.deepEqual(JSON.parse(body), {
+    model: "grok-4.5",
+    messages: [],
+    system: [{ type: "text", text: "marker" }],
   });
 });
 
@@ -178,6 +203,82 @@ test("session identifiers use header, metadata, then search id precedence", () =
       "responses",
     ),
     undefined,
+  );
+});
+
+test("session identifiers come from an Anthropic metadata user id", () => {
+  const request = new Request("https://gateway.example/v1/messages", {
+    headers: { "anthropic-version": "2023-06-01" },
+  });
+  // Claude Code sends the session inside metadata.user_id as a JSON string.
+  assert.equal(
+    sessionIdForInference(
+      request,
+      {
+        model: "claude-opus-5",
+        metadata: {
+          user_id: JSON.stringify({
+            device_id: "device-1",
+            session_id: "claude-session",
+          }),
+        },
+      },
+      "messages",
+    ),
+    "claude-session",
+  );
+  // Also accepted as an object, matching the identity injection.
+  assert.equal(
+    sessionIdForInference(
+      request,
+      {
+        model: "claude-opus-5",
+        metadata: { user_id: { session_id: "object-session" } },
+      },
+      "messages",
+    ),
+    "object-session",
+  );
+  // client_metadata still wins over the Anthropic metadata.
+  assert.equal(
+    sessionIdForInference(
+      request,
+      {
+        model: "claude-opus-5",
+        client_metadata: { session_id: "codex-session" },
+        metadata: { user_id: JSON.stringify({ session_id: "claude-session" }) },
+      },
+      "messages",
+    ),
+    "codex-session",
+  );
+  for (const metadata of [
+    undefined,
+    {},
+    { user_id: "not json" },
+    { user_id: "[]" },
+    { user_id: JSON.stringify({ device_id: "device-only" }) },
+    { user_id: JSON.stringify({ session_id: "  " }) },
+    { user_id: 42 },
+  ]) {
+    assert.equal(
+      sessionIdForInference(request, { model: "m", metadata }, "messages"),
+      undefined,
+    );
+  }
+});
+
+test("count_tokens binds to the same session as the matching message", () => {
+  const payload = {
+    model: "claude-opus-5",
+    metadata: { user_id: JSON.stringify({ session_id: "shared-session" }) },
+  };
+  const request = new Request("https://gateway.example/v1/messages", {
+    headers: { "anthropic-version": "2023-06-01" },
+  });
+  assert.equal(
+    sessionIdForInference(request, payload, "messages"),
+    sessionIdForInference(request, payload, "messages/count_tokens"),
   );
 });
 
@@ -525,6 +626,173 @@ test("model rewrite keeps the injected claude code identity", async () => {
   );
 });
 
+test("a Claude Code conversation binds session affinity", async () => {
+  const fixture = inferenceFixture();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(null, { status: 200 });
+
+  try {
+    await handleInference(
+      new Request("https://gateway.example/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "model",
+          messages: [],
+          metadata: {
+            user_id: JSON.stringify({
+              device_id: "device-1",
+              session_id: "claude-session",
+            }),
+          },
+        }),
+      }),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "messages",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // Regression: sessionIdForInference only read the Codex client_metadata, so
+  // every Anthropic request resolved no session and skipped affinity entirely.
+  assert.equal(fixture.affinities.size, 1);
+  const binding = [...fixture.affinities.values()][0];
+  assert.equal(binding.service_id, "primary");
+  assert.equal(binding.key_id, "primary-key");
+});
+
+test("claude code identity reaches count_tokens without adding metadata", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.services[0].inject_claude_code_identity = true;
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    captured = {
+      url: request.url,
+      anthropicBeta: request.headers.get("anthropic-beta"),
+      userAgent: request.headers.get("user-agent"),
+      xApp: request.headers.get("x-app"),
+      body: JSON.parse(await request.text()),
+    };
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const response = await handleInference(
+      new Request("https://gateway.example/v1/messages/count_tokens", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({ model: "model", messages: [] }),
+      }),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "messages/count_tokens",
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(captured.anthropicBeta, "claude-code-20250219");
+  assert.equal(captured.userAgent, "claude-cli/2.1.246 (external, sdk-cli)");
+  assert.equal(captured.xApp, "cli");
+  assert.equal(
+    captured.body.system[0].text,
+    "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+  );
+  // count_tokens rejects unknown top-level fields, so metadata stays out.
+  assert.equal(Object.hasOwn(captured.body, "metadata"), false);
+});
+
+test("a real claude-cli user agent is not downgraded to the pinned one", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.services[0].inject_claude_code_identity = true;
+  const originalFetch = globalThis.fetch;
+  let userAgent;
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    userAgent = request.headers.get("user-agent");
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    await handleInference(
+      new Request("https://gateway.example/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "anthropic-version": "2023-06-01",
+          "user-agent": "claude-cli/9.9.9 (external, sdk-cli)",
+        },
+        body: JSON.stringify({ model: "model", messages: [] }),
+      }),
+      fixture.env,
+      fixture.config,
+      fixture.client,
+      "messages",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(userAgent, "claude-cli/9.9.9 (external, sdk-cli)");
+});
+
+test("injected claude code identity is stable across requests", async () => {
+  const fixture = inferenceFixture();
+  fixture.config.services[0].inject_claude_code_identity = true;
+  const originalFetch = globalThis.fetch;
+  const userIds = [];
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const body = JSON.parse(await request.text());
+    userIds.push(JSON.parse(body.metadata.user_id));
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await handleInference(
+        new Request("https://gateway.example/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "session-id": "session-a",
+          },
+          body: JSON.stringify({ model: "model", messages: [] }),
+        }),
+        fixture.env,
+        fixture.config,
+        fixture.client,
+        "messages",
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(userIds.length, 2);
+  // Regression: random UUIDs per request made the upstream see a new device and
+  // a new session on every turn of the same conversation.
+  assert.deepEqual(userIds[0], userIds[1]);
+  assert.match(
+    userIds[0].device_id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+});
+
 test("claude code identity is not injected when the service flag is off", async () => {
   const fixture = inferenceFixture();
   const originalFetch = globalThis.fetch;
@@ -632,7 +900,7 @@ test("forwarding removes proxy metadata and client credentials", () => {
   assert.equal(headers.get("content-type"), "application/json");
 });
 
-test("Anthropic forwarding preserves x-api-key and authorization positions", () => {
+test("Anthropic forwarding sends a bearer token and drops the client x-api-key", () => {
   const request = new Request("https://gateway.example/v1/messages", {
     headers: {
       "x-api-key": "client",
@@ -642,14 +910,14 @@ test("Anthropic forwarding preserves x-api-key and authorization positions", () 
     },
   });
   const headers = forwardRequestHeaders(request, "upstream");
-  assert.equal(headers.get("x-api-key"), "upstream");
-  assert.equal(headers.get("authorization"), null);
+  assert.equal(headers.get("authorization"), "Bearer upstream");
+  assert.equal(headers.get("x-api-key"), null);
   assert.equal(headers.get("anthropic-version"), "2023-06-01");
   assert.equal(headers.get("anthropic-beta"), "messages-2025-04-14");
   assert.equal(headers.get("x-tenant"), "tenant-a");
 });
 
-test("Anthropic bearer forwarding replaces only the bearer position", () => {
+test("Anthropic bearer forwarding replaces the bearer token", () => {
   const request = new Request("https://gateway.example/v1/messages", {
     headers: {
       authorization: "Bearer client-oauth",
@@ -658,6 +926,65 @@ test("Anthropic bearer forwarding replaces only the bearer position", () => {
   });
   const headers = forwardRequestHeaders(request, "upstream-oauth");
   assert.equal(headers.get("authorization"), "Bearer upstream-oauth");
+  assert.equal(headers.get("x-api-key"), null);
+});
+
+test("anthropicErrorType maps statuses to the documented Anthropic types", () => {
+  assert.equal(anthropicErrorType(400), "invalid_request_error");
+  assert.equal(anthropicErrorType(401), "authentication_error");
+  assert.equal(anthropicErrorType(403), "permission_error");
+  assert.equal(anthropicErrorType(404), "not_found_error");
+  assert.equal(anthropicErrorType(413), "request_too_large");
+  assert.equal(anthropicErrorType(429), "rate_limit_error");
+  assert.equal(anthropicErrorType(503), "overloaded_error");
+  assert.equal(anthropicErrorType(529), "overloaded_error");
+  // Statuses without a documented type fall back to api_error rather than an
+  // invented one such as server_error.
+  assert.equal(anthropicErrorType(500), "api_error");
+  assert.equal(anthropicErrorType(502), "api_error");
+});
+
+test("apiError emits Anthropic types and keeps OpenAI codes", async () => {
+  const anthropic = apiError("anthropic", 503, "cooling down", {
+    type: "server_error",
+    code: "service_cooling_down",
+    requestId: "req-1",
+  });
+  assert.equal(anthropic.status, 503);
+  assert.deepEqual(await anthropic.json(), {
+    type: "error",
+    request_id: "req-1",
+    error: { type: "overloaded_error", message: "cooling down" },
+  });
+
+  const openai = apiError("openai", 503, "cooling down", {
+    type: "server_error",
+    code: "service_cooling_down",
+    requestId: "req-1",
+  });
+  assert.deepEqual(await openai.json(), {
+    error: {
+      message: "cooling down",
+      type: "server_error",
+      param: null,
+      code: "service_cooling_down",
+    },
+  });
+});
+
+test("a Claude client catalog request still authenticates with a bearer token", () => {
+  // Regression: /v1/models fans out to every allowed service regardless of
+  // protocol, so mirroring only the client's x-api-key left OpenAI-compatible
+  // upstreams unauthenticated and cooled their key health down.
+  const request = new Request("https://gateway.example/v1/models", {
+    headers: {
+      "x-api-key": "client",
+      "anthropic-version": "2023-06-01",
+      "user-agent": "claude-cli/2.1.246 (external, sdk-cli)",
+    },
+  });
+  const headers = forwardRequestHeaders(request, "upstream-secret");
+  assert.equal(headers.get("authorization"), "Bearer upstream-secret");
   assert.equal(headers.get("x-api-key"), null);
 });
 
@@ -816,6 +1143,48 @@ test("Anthropic inference cools the key on 401 and records service failure on 52
       assert.equal(fixture.calls.keyFailure, expectedKeyFailures);
       assert.equal(fixture.calls.failure, expectedFailures);
       assert.equal(fixture.calls.success, 0);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("health classification follows the request dialect, not the endpoint host", async () => {
+  // One service may serve both dialects, so the dialect comes from the request.
+  // 500 is an Anthropic service failure but not an OpenAI one; 400 is the
+  // reverse. The same service config is used for both rows.
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const [path, upstreamPath, status, expectedFailures] of [
+      ["/v1/messages", "messages", 500, 1],
+      ["/v1/messages", "messages", 400, 0],
+      ["/v1/responses", "responses", 500, 0],
+      ["/v1/responses", "responses", 400, 1],
+    ]) {
+      const fixture = inferenceFixture();
+      globalThis.fetch = async () => new Response(null, { status });
+      const body =
+        upstreamPath === "messages"
+          ? { model: "model", messages: [] }
+          : { model: "model", input: "hello" };
+      const response = await handleInference(
+        new Request(`https://gateway.example${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        fixture.env,
+        fixture.config,
+        fixture.client,
+        upstreamPath,
+        `dialect-${upstreamPath}-${status}`,
+      );
+      assert.equal(response.status, status);
+      assert.equal(
+        fixture.calls.failure,
+        expectedFailures,
+        `${upstreamPath} returning ${status}`,
+      );
     }
   } finally {
     globalThis.fetch = originalFetch;

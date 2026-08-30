@@ -8,7 +8,9 @@ export type WebSocketMessage = string | ArrayBuffer | ArrayBufferView;
 export interface ResponseCreateFrame {
   payload: JsonObject;
   model: string;
-  sessionId?: string;
+  // Always present, possibly undefined: the parser reads whatever the frame
+  // carried rather than omitting the field.
+  sessionId: string | undefined;
 }
 
 export type ClientFrame =

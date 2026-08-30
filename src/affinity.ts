@@ -47,7 +47,9 @@ export interface SessionAffinityIdentity extends SessionAffinityRegistration {
 }
 
 export interface StoredAffinityDecision {
-  selection?: AffinitySelection;
+  // Always present, possibly undefined: every caller computes a candidate that
+  // may not exist rather than omitting the field.
+  selection: AffinitySelection | undefined;
   status: "hit" | "rebound";
 }
 

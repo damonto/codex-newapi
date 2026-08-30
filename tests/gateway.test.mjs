@@ -361,7 +361,7 @@ test("Worker maps the model, replaces authorization, and preserves the upstream 
   }
 });
 
-test("Worker forwards Claude Code messages with the matching credential header", async () => {
+test("Worker forwards Claude Code messages with a bearer token", async () => {
   clearConfigCacheForTests();
   const originalFetch = globalThis.fetch;
   let captured;
@@ -404,8 +404,8 @@ test("Worker forwards Claude Code messages with the matching credential header",
     assert.equal(await response.text(), "event: message_start\n\n");
     assert.deepEqual(captured, {
       url: "https://primary.example/v1/messages?beta=true",
-      xApiKey: "upstream-key",
-      authorization: null,
+      xApiKey: null,
+      authorization: "Bearer upstream-key",
       anthropicVersion: "2023-06-01",
       body: {
         model: "grok-4.5",
@@ -434,10 +434,14 @@ test("Worker returns Anthropic-shaped authentication errors to Claude clients", 
     {},
   );
   assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), {
-    type: "error",
-    error: { type: "authentication_error", message: "Invalid API key" },
+  const body = await response.json();
+  assert.equal(body.type, "error");
+  assert.deepEqual(body.error, {
+    type: "authentication_error",
+    message: "Invalid API key",
   });
+  assert.equal(typeof body.request_id, "string");
+  assert.equal(body.request_id.length > 0, true);
 });
 
 test("Worker keeps the OpenAI invalid_api_key code for bearer clients", async () => {

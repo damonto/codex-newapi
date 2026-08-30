@@ -19,7 +19,7 @@ import {
   RequestLogContext,
 } from "./log.ts";
 import { handleModels } from "./models.ts";
-import { handleInference, type InferencePath } from "./proxy.ts";
+import { handleInference } from "./proxy.ts";
 import { handleConfiguredWebSearch } from "./search.ts";
 import {
   decodeSessionIdPath,
@@ -28,10 +28,8 @@ import {
   handleSessionList,
 } from "./session-bindings.ts";
 import type { ClientApiKeyConfig, GatewayConfig } from "./types.ts";
-import { requestProtocol } from "./protocol.ts";
+import { requestProtocol, type GatewayEndpoint } from "./protocol.ts";
 import { handleResponsesWebSocket } from "./websocket.ts";
-
-type GatewayEndpoint = "models" | "health" | "sessions" | InferencePath;
 
 type GatewayRoute =
   | { endpoint: Exclude<GatewayEndpoint, "health" | "sessions"> }
@@ -360,7 +358,7 @@ export default {
     const incomingUrl = new URL(request.url);
     const matchedRoute = route(incomingUrl.pathname);
     const endpoint = matchedRoute?.endpoint;
-    const protocol = requestProtocol(request);
+    const protocol = requestProtocol(request, endpoint);
     const requestLog = new RequestLogContext(
       requestId,
       request,
@@ -386,13 +384,10 @@ export default {
     if (!endpoint) {
       requestLog.warn({ outcome: "route_not_found" });
       return finish(
-        apiError(
-          protocol,
-          404,
-          "Not found",
-          "invalid_request_error",
-          "not_found",
-        ),
+        apiError(protocol, 404, "Not found", {
+          code: "not_found",
+          requestId,
+        }),
       );
     }
     const websocketRequest = isResponsesWebSocketRequest(request, matchedRoute);
@@ -407,6 +402,7 @@ export default {
           protocol,
           405,
           `Only ${allowedMethods.join(" or ")} is allowed for this endpoint`,
+          { requestId },
         ),
       );
     }
@@ -424,7 +420,11 @@ export default {
         error: errorMessage(error),
       });
       return finish(
-        apiError(protocol, 500, message, "server_error", "configuration_error"),
+        apiError(protocol, 500, message, {
+          type: "server_error",
+          code: "configuration_error",
+          requestId,
+        }),
       );
     }
 
@@ -435,13 +435,10 @@ export default {
         authentication: "rejected",
       });
       return finish(
-        apiError(
-          protocol,
-          401,
-          "Invalid API key",
-          "invalid_request_error",
-          "invalid_api_key",
-        ),
+        apiError(protocol, 401, "Invalid API key", {
+          code: "invalid_api_key",
+          requestId,
+        }),
       );
     }
 
@@ -473,13 +470,11 @@ export default {
         error: errorMessage(error),
       });
       return finish(
-        apiError(
-          protocol,
-          500,
-          "The gateway failed to process the request",
-          "server_error",
-          "gateway_error",
-        ),
+        apiError(protocol, 500, "The gateway failed to process the request", {
+          type: "server_error",
+          code: "gateway_error",
+          requestId,
+        }),
       );
     }
   },

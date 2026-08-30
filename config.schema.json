@@ -13,9 +13,7 @@
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "model"
-        ],
+        "required": ["model"],
         "properties": {
           "model": {
             "type": "string",
@@ -41,9 +39,7 @@
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "model"
-        ],
+        "required": ["model"],
         "properties": {
           "model": {
             "type": "string",
@@ -53,10 +49,7 @@
       }
     }
   },
-  "required": [
-    "services",
-    "api_keys"
-  ],
+  "required": ["services", "api_keys"],
   "properties": {
     "$schema": {
       "type": "string"
@@ -92,12 +85,7 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": [
-                "id",
-                "api_key",
-                "disabled",
-                "priority"
-              ],
+              "required": ["id", "api_key", "disabled", "priority"],
               "properties": {
                 "id": {
                   "type": "string",
@@ -151,10 +139,7 @@
           "retry": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "status_codes",
-              "delays_ms"
-            ],
+            "required": ["status_codes", "delays_ms"],
             "properties": {
               "status_codes": {
                 "type": "array",
@@ -208,11 +193,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "id",
-          "api_key",
-          "services"
-        ],
+        "required": ["id", "api_key", "services"],
         "properties": {
           "id": {
             "type": "string",
@@ -244,17 +225,11 @@
     "web_search": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "mode"
-      ],
+      "required": ["mode"],
       "properties": {
         "mode": {
           "type": "string",
-          "enum": [
-            "proxy",
-            "tavily",
-            "exa"
-          ],
+          "enum": ["proxy", "tavily", "exa"],
           "default": "proxy"
         },
         "base_url": {
@@ -280,27 +255,19 @@
                 "const": "proxy"
               }
             },
-            "required": [
-              "mode"
-            ]
+            "required": ["mode"]
           },
           "then": {
             "not": {
               "anyOf": [
                 {
-                  "required": [
-                    "base_url"
-                  ]
+                  "required": ["base_url"]
                 },
                 {
-                  "required": [
-                    "api_key"
-                  ]
+                  "required": ["api_key"]
                 },
                 {
-                  "required": [
-                    "max_results"
-                  ]
+                  "required": ["max_results"]
                 }
               ]
             }
@@ -310,20 +277,13 @@
           "if": {
             "properties": {
               "mode": {
-                "enum": [
-                  "tavily",
-                  "exa"
-                ]
+                "enum": ["tavily", "exa"]
               }
             },
-            "required": [
-              "mode"
-            ]
+            "required": ["mode"]
           },
           "then": {
-            "required": [
-              "api_key"
-            ]
+            "required": ["api_key"]
           }
         },
         {
@@ -333,9 +293,7 @@
                 "const": "tavily"
               }
             },
-            "required": [
-              "mode"
-            ]
+            "required": ["mode"]
           },
           "then": {
             "properties": {
@@ -354,9 +312,7 @@
                 "const": "exa"
               }
             },
-            "required": [
-              "mode"
-            ]
+            "required": ["mode"]
           },
           "then": {
             "properties": {

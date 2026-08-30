@@ -64,7 +64,9 @@ export interface SelectionAffinity {
 }
 
 export interface ServiceSelection {
-  target?: ModelServiceTarget;
+  // Always present, possibly undefined: selection computes a target that may
+  // not exist. `affinity` is genuinely absent when no session was involved.
+  target: ModelServiceTarget | undefined;
   checks: ServiceSelectionCheck[];
   keyChecks: KeySelectionCheck[];
   affinity?: SelectionAffinity;
@@ -114,11 +116,14 @@ export function modelRoutesByService(
   config: GatewayConfig,
   client: ClientApiKeyConfig,
 ): Map<string, Record<string, ModelRouteConfig>> {
+  const allowedServices = new Set(client.services);
   return new Map(
-    config.services.map((service) => [
-      service.id,
-      modelRoutesForService(config, client, service),
-    ]),
+    config.services
+      .filter((service) => allowedServices.has(service.id))
+      .map((service) => [
+        service.id,
+        modelRoutesForService(config, client, service),
+      ]),
   );
 }
 
@@ -346,6 +351,7 @@ export async function selectAvailableServiceWithDetails(
   );
   if (availability.candidates.length === 0) {
     return {
+      target: undefined,
       checks: availability.checks,
       keyChecks: availability.keyChecks,
     };

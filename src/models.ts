@@ -5,8 +5,7 @@ import {
 } from "./concurrency.ts";
 import { upstreamApiKeyValues } from "./credentials.ts";
 import {
-  isProtocolHealthFailureStatus,
-  isProtocolKeyHealthFailureStatus,
+  healthFailureScope,
   recordKeyFailure,
   recordServiceFailure,
   recordServiceSuccess,
@@ -67,7 +66,9 @@ interface ServiceModelsResult {
   success: boolean;
   models: UpstreamModel[];
   upstream?: LogFields;
-  upstreamError?: Promise<LogFields>;
+  // Always present on a failed result, possibly undefined when the error body
+  // was not JSON. Success results omit it.
+  upstreamError?: Promise<LogFields> | undefined;
 }
 
 interface ModelsCacheEntry {
@@ -146,6 +147,9 @@ const modelsCache = new ModelsCache();
 const ANTHROPIC_MODEL_CREATED_AT = "2024-01-01T00:00:00Z";
 const ANTHROPIC_MODEL_MAX_TOKENS = 32000;
 const ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS = 200000;
+// A model only advertises 1M context when its context window actually reaches
+// 1M. The fallback above is 200k, so models outside the catalog report false.
+const ANTHROPIC_1M_CONTEXT_TOKENS = 1_000_000;
 
 const codexCatalogModels = (codexCatalog as { models: JsonObject[] }).models;
 const codexModelBySlug = new Map<string, JsonObject>();
@@ -253,7 +257,9 @@ async function fetchServiceModels(
   const { service, key } = target;
   const incomingUrl = new URL(request.url);
   const headers = forwardRequestHeaders(request, key.api_key);
-  const protocol = requestProtocol(request);
+  // /v1/models is dialect-neutral, so this resolves from the client's identity.
+  // A service may serve either dialect, so it cannot declare one.
+  const protocol = requestProtocol(request, "models");
   const startedAt = performance.now();
 
   try {
@@ -281,13 +287,13 @@ async function fetchServiceModels(
       if (!upstreamError) {
         await discardBody(result.response.body);
       }
-      if (isProtocolHealthFailureStatus(result.response.status, protocol)) {
+      const failureScope = healthFailureScope(result.response.status, protocol);
+      if (failureScope === "service") {
         await scheduleHealthUpdate(
           context,
           recordServiceFailure(env, service.id, requestId, "catalog"),
         );
-      }
-      if (isProtocolKeyHealthFailureStatus(result.response.status, protocol)) {
+      } else if (failureScope === "key") {
         await scheduleHealthUpdate(
           context,
           recordKeyFailure(env, service.id, key.id, requestId, "catalog"),
@@ -442,33 +448,37 @@ export function isCodexUserAgent(request: Request): boolean {
   );
 }
 
-export function isClaudeUserAgent(request: Request): boolean {
-  return (
-    request.headers.get("user-agent")?.toLowerCase().includes("claude") ?? false
-  );
-}
-
 export function modelsFormatFor(request: Request): ModelsFormat {
-  if (requestProtocol(request) === "anthropic") {
+  // `models` is dialect-neutral, so requestProtocol resolves it from the
+  // client's own identity. The Claude user-agent rule lives there, not here.
+  if (requestProtocol(request, "models") === "anthropic") {
     return "anthropic";
   }
-  if (isCodexUserAgent(request)) {
-    return "codex";
-  }
-  return isClaudeUserAgent(request) ? "anthropic" : "openai";
+  return isCodexUserAgent(request) ? "codex" : "openai";
+}
+
+/**
+ * True when the upstream already returned an Anthropic `ModelInfo`, which a real
+ * Anthropic-compatible `/v1/models` does. Its own fields beat anything the
+ * gateway could derive from the Codex catalog.
+ */
+function isAnthropicModelInfo(model: JsonObject): boolean {
+  return model.type === "model" && isObject(model.capabilities);
 }
 
 function anthropicModelInfo(model: JsonObject): JsonObject {
   const id = typeof model.id === "string" ? model.id : "";
+  if (isAnthropicModelInfo(model)) {
+    // api.anthropic.com does not send `name`, so add it without overwriting a
+    // value the upstream did provide. Claude Desktop Discovery needs it.
+    return { name: id, ...model, id };
+  }
   const catalog = codexModelBySlug.get(id);
   const inputModalities = Array.isArray(catalog?.input_modalities)
     ? (catalog.input_modalities as unknown[])
     : [];
   const supportsImages = inputModalities.includes("image");
   const supportsPdf = inputModalities.includes("pdf");
-  const supportsReasoningSummaries =
-    catalog?.supports_reasoning_summaries === true ||
-    catalog?.supports_reasoning_summary_parameter === true;
   const supportsCodeExecution =
     catalog !== undefined &&
     typeof catalog.node_repl_disabled === "boolean" &&
@@ -490,6 +500,8 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
       ? catalog.max_context_window
       : ANTHROPIC_MODEL_DEFAULT_CONTEXT_TOKENS;
 
+  const supports1mContext = maxInputTokens >= ANTHROPIC_1M_CONTEXT_TOKENS;
+
   const displayName =
     typeof catalog?.display_name === "string" ? catalog.display_name : id;
   const effortCapability = {
@@ -503,27 +515,39 @@ function anthropicModelInfo(model: JsonObject): JsonObject {
 
   return {
     id,
+    // Fields the API reference does not list, because they serve the clients
+    // rather than api.anthropic.com: Claude Desktop Discovery requires `name`,
+    // and Claude Code reads the 1M flags to offer that context window.
     name: id,
     type: "model",
     display_name: displayName,
-    supports1m: maxInputTokens >= 100_000,
-    prefer1m: maxInputTokens >= 100_000,
+    supports1m: supports1mContext,
+    prefer1m: supports1mContext,
     created_at: ANTHROPIC_MODEL_CREATED_AT,
     max_input_tokens: maxInputTokens,
+    // The catalog publishes no output-token field for any model, so this is the
+    // Claude Code default for unknown models rather than a per-model limit.
     max_tokens: ANTHROPIC_MODEL_MAX_TOKENS,
     capabilities: {
+      // The Codex catalog has no per-model equivalent for these two, and the
+      // gateway cannot probe an upstream for them, so they report the protocol
+      // default rather than a verified per-model value.
       batch: { supported: true },
       citations: { supported: true },
       code_execution: { supported: supportsCodeExecution },
+      // Three named Anthropic beta strategies with nothing equivalent in the
+      // Codex catalog. Reasoning-summary support says nothing about them, so
+      // they report unsupported instead of guessing from an unrelated signal.
       context_management: {
-        supported: supportsReasoningSummaries,
-        clear_thinking_20251015: { supported: supportsReasoningSummaries },
-        clear_tool_uses_20250919: { supported: supportsReasoningSummaries },
-        compact_20260112: { supported: supportsReasoningSummaries },
+        supported: false,
+        clear_thinking_20251015: { supported: false },
+        clear_tool_uses_20250919: { supported: false },
+        compact_20260112: { supported: false },
       },
       effort: effortCapability,
       image_input: { supported: supportsImages },
       pdf_input: { supported: supportsPdf },
+      // Protocol default, as with batch and citations above.
       structured_outputs: { supported: true },
       thinking: {
         supported: supportsEffort,
@@ -777,8 +801,7 @@ export async function handleModels(
         requestProtocol(request),
         error.status,
         error.messageText,
-        error.type,
-        error.code,
+        { type: error.type, code: error.code, requestId },
       );
     }
     throw error;

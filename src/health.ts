@@ -10,38 +10,49 @@ export const FAILURE_THRESHOLD = 10;
 export const FAILURE_WINDOW_MS = 5 * 60 * 1000;
 export const COOLDOWN_MS = 30 * 60 * 1000;
 
-export function isHealthFailureStatus(status: number): boolean {
-  return status === 400 || status === 503;
-}
+/** Which health record an upstream status produces. */
+export type HealthFailureScope = "service" | "key";
 
-export function isKeyHealthFailureStatus(status: number): boolean {
-  return status === 402 || status === 403;
-}
+// One map per protocol rather than a service set plus a key set: a status can
+// only appear once, so recording both a service and a key failure for the same
+// response is unrepresentable instead of merely unlikely.
+//
+// OpenAI-compatible upstreams: 400 and 503 mean the service is unhealthy, while
+// 402 (billing) and 403 (forbidden) are specific to the key used.
+const OPENAI_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
+  [400, "service"],
+  [402, "key"],
+  [403, "key"],
+  [503, "service"],
+]);
 
-export function isProtocolHealthFailureStatus(
+// Anthropic upstreams signal an unhealthy service with 5xx statuses: 529 is
+// their documented overload code, and real gateways in front of them return
+// 500/502/503 for the same condition. 401 is an invalid key and 403 is a key
+// without access. The failure streak threshold keeps an isolated 5xx from
+// cooling the service down.
+const ANTHROPIC_FAILURE_SCOPES = new Map<number, HealthFailureScope>([
+  [401, "key"],
+  [403, "key"],
+  [500, "service"],
+  [502, "service"],
+  [503, "service"],
+  [529, "service"],
+]);
+
+/**
+ * Resolves the health record an upstream status produces, or `undefined` when
+ * the status is not counted against health at all.
+ */
+export function healthFailureScope(
   status: number,
   protocol: ApiProtocol,
-): boolean {
-  return isAnthropicProtocol(protocol)
-    ? isAnthropicHealthFailureStatus(status)
-    : isHealthFailureStatus(status);
-}
-
-export function isProtocolKeyHealthFailureStatus(
-  status: number,
-  protocol: ApiProtocol,
-): boolean {
-  return isAnthropicProtocol(protocol)
-    ? isAnthropicKeyHealthFailureStatus(status)
-    : isKeyHealthFailureStatus(status);
-}
-
-export function isAnthropicHealthFailureStatus(status: number): boolean {
-  return status === 529;
-}
-
-export function isAnthropicKeyHealthFailureStatus(status: number): boolean {
-  return status === 401;
+): HealthFailureScope | undefined {
+  return (
+    isAnthropicProtocol(protocol)
+      ? ANTHROPIC_FAILURE_SCOPES
+      : OPENAI_FAILURE_SCOPES
+  ).get(status);
 }
 
 export type HealthScope = "inference" | "catalog";

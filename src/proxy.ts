@@ -1,12 +1,12 @@
 import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
 import {
   applyClaudeCodeIdentityHeaders,
+  claudeCodeIdentityFor,
   injectClaudeCodeIdentity,
 } from "./claude-code-identity.ts";
 import { upstreamApiKeyValues } from "./credentials.ts";
 import {
-  isProtocolHealthFailureStatus,
-  isProtocolKeyHealthFailureStatus,
+  healthFailureScope,
   recordKeyFailure,
   recordServiceFailure,
   recordServiceSuccess,
@@ -20,7 +20,7 @@ import {
   errorMessage,
   type RequestLogContext,
 } from "./log.ts";
-import { requestProtocol } from "./protocol.ts";
+import { requestProtocol, type InferencePath } from "./protocol.ts";
 import {
   resolveModelRoute,
   selectAvailableServiceWithDetails,
@@ -42,18 +42,18 @@ interface InferencePayload {
   model: string;
 }
 
-export type InferencePath =
-  | "responses"
-  | "responses/compact"
-  | "alpha/search"
-  | "chat/completions"
-  | "images/generations"
-  | "images/edits"
-  | "messages"
-  | "messages/count_tokens";
+export type { InferencePath } from "./protocol.ts";
 
 const MAX_INFERENCE_BODY_MIB = 96;
 export const MAX_INFERENCE_BODY_BYTES = MAX_INFERENCE_BODY_MIB * 1024 * 1024;
+
+// Anthropic inference paths that a Claude-Code-gated upstream will check. Both
+// carry the identity headers and the system marker; see the injection call for
+// why only /v1/messages also carries metadata.
+const ANTHROPIC_IDENTITY_PATHS = new Set<InferencePath>([
+  "messages",
+  "messages/count_tokens",
+]);
 
 export interface UpstreamRetryOptions {
   wait?: (delayMs: number) => Promise<void>;
@@ -170,6 +170,31 @@ function nonBlankString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Reads the session id out of an Anthropic `metadata.user_id`. Claude Code
+ * sends it as a JSON string holding `device_id` and `session_id`, so without
+ * this the whole Anthropic protocol resolves no session and gets no affinity.
+ */
+function anthropicMetadataSessionId(
+  payload: InferencePayload,
+): string | undefined {
+  const userId = asRecord(payload.metadata)?.user_id;
+  if (typeof userId === "string") {
+    try {
+      return nonBlankString(asRecord(JSON.parse(userId))?.session_id);
+    } catch {
+      return undefined;
+    }
+  }
+  return nonBlankString(asRecord(userId)?.session_id);
+}
+
 export function sessionIdForInference(
   request: Request,
   payload: InferencePayload,
@@ -179,18 +204,15 @@ export function sessionIdForInference(
   if (headerSessionId) {
     return headerSessionId;
   }
-  const clientMetadata = payload.client_metadata;
-  if (
-    typeof clientMetadata === "object" &&
-    clientMetadata !== null &&
-    !Array.isArray(clientMetadata)
-  ) {
-    const metadataSessionId = nonBlankString(
-      (clientMetadata as Record<string, unknown>).session_id,
-    );
-    if (metadataSessionId) {
-      return metadataSessionId;
-    }
+  const clientMetadataSessionId = nonBlankString(
+    asRecord(payload.client_metadata)?.session_id,
+  );
+  if (clientMetadataSessionId) {
+    return clientMetadataSessionId;
+  }
+  const metadataSessionId = anthropicMetadataSessionId(payload);
+  if (metadataSessionId) {
+    return metadataSessionId;
   }
   return upstreamPath === "alpha/search"
     ? nonBlankString(payload.id)
@@ -214,15 +236,21 @@ function parseInferencePayload(text: string): InferencePayload {
   return value as InferencePayload;
 }
 
-export function rewriteModel(
-  originalText: string,
+/**
+ * Serializes the upstream request body. `payload` may already carry mutations
+ * from identity injection, so callers pass `changed: false` only when nothing
+ * touched either the model or the body, and the original bytes go through
+ * untouched.
+ */
+export function upstreamBody(
+  rawBody: Uint8Array<ArrayBuffer>,
   payload: InferencePayload,
   upstreamModel: string,
-): string {
-  if (payload.model === upstreamModel) {
-    return originalText;
-  }
-  return JSON.stringify({ ...payload, model: upstreamModel });
+  changed: boolean,
+): BodyInit {
+  return changed
+    ? JSON.stringify({ ...payload, model: upstreamModel })
+    : rawBody;
 }
 
 export async function handleInference(
@@ -240,7 +268,7 @@ export async function handleInference(
     client.api_key,
     ...upstreamApiKeyValues(config),
   ]);
-  const protocol = requestProtocol(request);
+  const protocol = requestProtocol(request, upstreamPath);
   let rawBody: Uint8Array<ArrayBuffer>;
   try {
     rawBody = await readBodyWithinLimit(
@@ -258,8 +286,7 @@ export async function handleInference(
         protocol,
         413,
         `Request body exceeds the ${MAX_INFERENCE_BODY_MIB} MiB limit`,
-        "invalid_request_error",
-        "request_too_large",
+        { code: "request_too_large", requestId },
       );
     }
     throw error;
@@ -278,6 +305,7 @@ export async function handleInference(
       protocol,
       400,
       error instanceof Error ? error.message : "invalid request body",
+      { requestId },
     );
   }
 
@@ -302,8 +330,7 @@ export async function handleInference(
       protocol,
       400,
       `Model ${payload.model} is not available for this API key`,
-      "invalid_request_error",
-      "model_not_found",
+      { code: "model_not_found", requestId },
     );
   }
   const sessionId = sessionIdForInference(request, payload, upstreamPath);
@@ -345,8 +372,7 @@ export async function handleInference(
       protocol,
       503,
       `No healthy service is currently available for model ${payload.model}`,
-      "server_error",
-      "service_cooling_down",
+      { type: "server_error", code: "service_cooling_down", requestId },
     );
   }
   const { service, key: selectedKey } = target;
@@ -364,11 +390,16 @@ export async function handleInference(
   const modelRewritten = payload.model !== upstreamModel;
   const claudeCodeIdentity =
     protocol === "anthropic" &&
-    upstreamPath === "messages" &&
+    ANTHROPIC_IDENTITY_PATHS.has(upstreamPath) &&
     service.inject_claude_code_identity === true;
-  const identityBodyChanged =
-    claudeCodeIdentity && injectClaudeCodeIdentity(payload);
+  let identityBodyChanged = false;
   if (claudeCodeIdentity) {
+    const identity = await claudeCodeIdentityFor(client.api_key, sessionId);
+    identityBodyChanged = injectClaudeCodeIdentity(payload, identity, {
+      // count_tokens rejects unknown top-level fields and does not accept
+      // metadata, so only the system marker is injected there.
+      includeMetadata: upstreamPath === "messages",
+    });
     applyClaudeCodeIdentityHeaders(headers);
   }
   const bodyChanged = modelRewritten || identityBodyChanged;
@@ -381,16 +412,7 @@ export async function handleInference(
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
-  let body: BodyInit = rawBody;
-  if (modelRewritten) {
-    // injectClaudeCodeIdentity mutated the same payload object, so the spread
-    // in rewriteModel serializes the injected identity as well.
-    body = rewriteModel(originalText, payload, upstreamModel);
-  } else if (identityBodyChanged) {
-    // Model is unchanged; rewriteModel would return the original text and drop
-    // the injected identity, so serialize the mutated payload directly.
-    body = JSON.stringify(payload);
-  }
+  const body = upstreamBody(rawBody, payload, upstreamModel, bodyChanged);
   const incomingUrl = new URL(request.url);
   const startedAt = performance.now();
   const result = await fetchWithConfiguredRetries(
@@ -406,7 +428,7 @@ export async function handleInference(
       ...retryOptions,
       onResponse: async (response, attempt) => {
         await retryOptions.onResponse?.(response, attempt);
-        if (isProtocolKeyHealthFailureStatus(response.status, protocol)) {
+        if (healthFailureScope(response.status, protocol) === "key") {
           await scheduleHealthUpdate(
             context,
             recordKeyFailure(env, service.id, selectedKey.id, requestId),
@@ -437,8 +459,7 @@ export async function handleInference(
       protocol,
       502,
       "The selected upstream service could not be reached",
-      "server_error",
-      "upstream_unavailable",
+      { type: "server_error", code: "upstream_unavailable", requestId },
     );
   }
 
@@ -489,13 +510,13 @@ export async function handleInference(
       context,
       recordServiceSuccess(env, service.id, requestId),
     );
-  } else {
-    if (isProtocolHealthFailureStatus(upstreamResponse.status, protocol)) {
-      await scheduleHealthUpdate(
-        context,
-        recordServiceFailure(env, service.id, requestId),
-      );
-    }
+  } else if (
+    healthFailureScope(upstreamResponse.status, protocol) === "service"
+  ) {
+    await scheduleHealthUpdate(
+      context,
+      recordServiceFailure(env, service.id, requestId),
+    );
   }
   return upstreamResponse;
 }
