@@ -37,7 +37,6 @@ const SERVICE_FIELDS = new Set([
   "model_routes",
   "supports_websocket",
   "supports_web_search",
-  "inject_claude_code_identity",
   "retry",
 ]);
 const SERVICE_API_KEY_FIELDS = new Set([
@@ -320,10 +319,6 @@ function parseService(value: unknown, index: number): ServiceConfig {
     supports_web_search: optionalBoolean(
       value.supports_web_search,
       `${path}.supports_web_search`,
-    ),
-    inject_claude_code_identity: optionalBoolean(
-      value.inject_claude_code_identity,
-      `${path}.inject_claude_code_identity`,
     ),
     ...(retry === undefined ? {} : { retry }),
   };

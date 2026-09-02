@@ -1,9 +1,4 @@
 import { BodyTooLargeError, discardBody, readBodyWithinLimit } from "./body.ts";
-import {
-  applyClaudeCodeIdentityHeaders,
-  claudeCodeIdentityFor,
-  injectClaudeCodeIdentity,
-} from "./claude-code-identity.ts";
 import { upstreamApiKeyValues } from "./credentials.ts";
 import {
   healthFailureScope,
@@ -46,14 +41,6 @@ export type { InferencePath } from "./protocol.ts";
 
 const MAX_INFERENCE_BODY_MIB = 96;
 export const MAX_INFERENCE_BODY_BYTES = MAX_INFERENCE_BODY_MIB * 1024 * 1024;
-
-// Anthropic inference paths that a Claude-Code-gated upstream will check. Both
-// carry the identity headers and the system marker; see the injection call for
-// why only /v1/messages also carries metadata.
-const ANTHROPIC_IDENTITY_PATHS = new Set<InferencePath>([
-  "messages",
-  "messages/count_tokens",
-]);
 
 export interface UpstreamRetryOptions {
   wait?: (delayMs: number) => Promise<void>;
@@ -237,10 +224,8 @@ function parseInferencePayload(text: string): InferencePayload {
 }
 
 /**
- * Serializes the upstream request body. `payload` may already carry mutations
- * from identity injection, so callers pass `changed: false` only when nothing
- * touched either the model or the body, and the original bytes go through
- * untouched.
+ * Serializes the upstream request body after a model rewrite, or passes the
+ * original bytes through untouched when nothing changed.
  */
 export function upstreamBody(
   rawBody: Uint8Array<ArrayBuffer>,
@@ -388,22 +373,7 @@ export async function handleInference(
   const headers = forwardRequestHeaders(request, selectedKey.api_key);
   headers.delete("content-length");
   const modelRewritten = payload.model !== upstreamModel;
-  const claudeCodeIdentity =
-    protocol === "anthropic" &&
-    ANTHROPIC_IDENTITY_PATHS.has(upstreamPath) &&
-    service.inject_claude_code_identity === true;
-  let identityBodyChanged = false;
-  if (claudeCodeIdentity) {
-    const identity = await claudeCodeIdentityFor(client.api_key, sessionId);
-    identityBodyChanged = injectClaudeCodeIdentity(payload, identity, {
-      // count_tokens rejects unknown top-level fields and does not accept
-      // metadata, so only the system marker is injected there.
-      includeMetadata: upstreamPath === "messages",
-    });
-    applyClaudeCodeIdentityHeaders(headers);
-  }
-  const bodyChanged = modelRewritten || identityBodyChanged;
-  if (bodyChanged) {
+  if (modelRewritten) {
     headers.delete("content-md5");
     headers.delete("digest");
     headers.delete("content-digest");
@@ -412,7 +382,7 @@ export async function handleInference(
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
-  const body = upstreamBody(rawBody, payload, upstreamModel, bodyChanged);
+  const body = upstreamBody(rawBody, payload, upstreamModel, modelRewritten);
   const incomingUrl = new URL(request.url);
   const startedAt = performance.now();
   const result = await fetchWithConfiguredRetries(

@@ -74,7 +74,6 @@
       "priority": 75,
       "supports_websocket": false,
       "supports_web_search": false,
-      "inject_claude_code_identity": true,
       "models": ["claude-opus-5"],
       "retry": {
         "status_codes": [429, 529],

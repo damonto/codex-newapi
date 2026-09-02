@@ -28,12 +28,10 @@ This repository contains a TypeScript Cloudflare Worker that serves as an AI API
 
 ## Request and routing behavior
 
-- Preserve request bodies, query strings, headers, and upstream responses whenever possible. Only replace the gateway Authorization header, rewrite a model field when a route is configured, inject the Claude Code identity when a service sets `inject_claude_code_identity`, and remove headers that become invalid after rewriting.
+- Preserve request bodies, query strings, headers, and upstream responses whenever possible. Only replace the gateway Authorization header, rewrite a model field when a route is configured, and remove headers that become invalid after rewriting.
 - Authenticate upstream requests with `Authorization: Bearer <key>` for every protocol. Client credentials, including `x-api-key`, are stripped before forwarding.
 - Accept client credentials from either `Authorization: Bearer` or `x-api-key`, since the Claude Code SDK sends the latter.
 - Return Anthropic-shaped errors to Anthropic-protocol clients, with the `type` derived from the HTTP status via the documented Anthropic set. Diagnostic `code` values are OpenAI-only and remain in the request log.
-- Inject the Claude Code identity headers and `system` marker on both `/v1/messages` and `/v1/messages/count_tokens`, but the `metadata.user_id` field only on `/v1/messages`; `count_tokens` does not accept `metadata`.
-- Derive the injected `device_id` and `session_id` from the client API key and session so they stay stable across turns instead of changing per request.
 - Resolve the affinity session id from the `session-id` header, then `client_metadata.session_id`, then the Anthropic `metadata.user_id` JSON payload, then the `alpha/search` top-level `id`. Claude Code carries its session only in `metadata.user_id`.
 - Select services by descending priority, then configuration order, while skipping services in cooldown.
 - Within the selected service, use the highest-priority enabled key and break ties by configuration order. Key switching is configuration-driven, not automatic.

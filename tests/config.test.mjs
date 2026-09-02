@@ -125,12 +125,10 @@ test("parseConfig accepts explicit service capability flags", () => {
   const input = validConfig();
   input.services[0].supports_websocket = true;
   input.services[0].supports_web_search = false;
-  input.services[0].inject_claude_code_identity = true;
 
   const config = parseConfig(input);
   assert.equal(config.services[0].supports_websocket, true);
   assert.equal(config.services[0].supports_web_search, false);
-  assert.equal(config.services[0].inject_claude_code_identity, true);
 });
 
 test("parseConfig rejects a service protocol field", () => {
@@ -147,11 +145,7 @@ test("parseConfig rejects a service protocol field", () => {
 });
 
 test("parseConfig rejects non-boolean service capability flags", () => {
-  for (const field of [
-    "supports_websocket",
-    "supports_web_search",
-    "inject_claude_code_identity",
-  ]) {
+  for (const field of ["supports_websocket", "supports_web_search"]) {
     const input = validConfig();
     input.services[0][field] = "true";
     assert.throws(
@@ -256,6 +250,18 @@ test("parseConfig rejects the removed service api_key field", () => {
     (error) =>
       error instanceof ConfigError &&
       error.message === "services[0].api_key is not supported",
+  );
+});
+
+test("parseConfig rejects the removed inject_claude_code_identity field", () => {
+  const input = validConfig();
+  input.services[0].inject_claude_code_identity = true;
+  assert.throws(
+    () => parseConfig(input),
+    (error) =>
+      error instanceof ConfigError &&
+      error.message ===
+        "services[0].inject_claude_code_identity is not supported",
   );
 });
 
